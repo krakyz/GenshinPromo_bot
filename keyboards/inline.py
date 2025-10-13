@@ -1,5 +1,5 @@
 """
-Оптимизированные клавиатуры с таймерами валидации и функциями истекших кодов
+Клавиатуры с системой тройного клика для валидации действий
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import List, Tuple, Optional
@@ -154,45 +154,59 @@ def get_admin_back_keyboard() -> InlineKeyboardMarkup:
     return KeyboardBuilder.create_keyboard(buttons=[], back_button=True)
 
 
-# Новые клавиатуры для деактивации кодов с таймером
+# Новые клавиатуры для деактивации кодов с кнопками
 def get_admin_expire_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
     """Клавиатура с кнопками кодов для деактивации"""
     buttons = []
     
     for code in codes:
-        buttons.append([(f"🔥 {code.code}", f"expire_code_{code.code}")])
+        buttons.append([(f"🔥 {code.code}", f"expire_code_{code.code}_1")])
     
     return KeyboardBuilder.create_keyboard(buttons=buttons, back_button=True)
 
 
-def get_expire_code_timer_keyboard(code: str, seconds_left: int) -> InlineKeyboardMarkup:
-    """Клавиатура с таймером для подтверждения деактивации"""
-    if seconds_left > 0:
-        button_text = f"⏳ Подтверждение через {seconds_left} сек"
-        callback_data = f"timer_{code}_{seconds_left-1}"
-    else:
+def get_expire_code_click_keyboard(code: str, click_count: int) -> InlineKeyboardMarkup:
+    """Клавиатура с прогрессом кликов для подтверждения деактивации"""
+    
+    if click_count == 1:
+        button_text = f"🔸 {code} (нажми еще 2 раза)"
+        callback_data = f"expire_code_{code}_2"
+    elif click_count == 2:
+        button_text = f"🔸🔸 {code} (нажми еще 1 раз)"
+        callback_data = f"expire_code_{code}_3"
+    elif click_count >= 3:
         button_text = f"❌ ДЕАКТИВИРОВАТЬ {code}"
         callback_data = f"confirm_expire_{code}"
+    else:
+        button_text = f"🔥 {code}"
+        callback_data = f"expire_code_{code}_1"
     
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=button_text, callback_data=callback_data)],
-        [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_expire_code")]
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_expire_code")]
     ])
 
 
-# Новые клавиатуры для сброса БД с таймером
-def get_reset_db_timer_keyboard(seconds_left: int) -> InlineKeyboardMarkup:
-    """Клавиатура с таймером для подтверждения сброса БД"""
-    if seconds_left > 0:
-        button_text = f"⏳ Подтверждение через {seconds_left} сек"
-        callback_data = f"reset_timer_{seconds_left-1}"
-    else:
+# Новые клавиатуры для сброса БД с кликером
+def get_reset_db_click_keyboard(click_count: int) -> InlineKeyboardMarkup:
+    """Клавиатура с прогрессом кликов для подтверждения сброса БД"""
+    
+    if click_count == 1:
+        button_text = "🔸 Сброс БД (нажми еще 2 раза)"
+        callback_data = "reset_click_2"
+    elif click_count == 2:
+        button_text = "🔸🔸 Сброс БД (нажми еще 1 раз)"
+        callback_data = "reset_click_3"
+    elif click_count >= 3:
         button_text = "🗑️ СБРОСИТЬ БАЗУ ДАННЫХ"
         callback_data = "confirm_reset_db"
+    else:
+        button_text = "🗑️ Сбросить БД"
+        callback_data = "reset_click_1"
     
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=button_text, callback_data=callback_data)],
-        [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_database")]
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_database")]
     ])
 
 

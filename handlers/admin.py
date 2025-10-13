@@ -1,5 +1,5 @@
 """
-Полностью оптимизированный админ-модуль с таймерами валидации и рекламными постами
+Админ-модуль с системой тройного клика для валидации критичных действий
 """
 import asyncio
 import logging
@@ -21,8 +21,8 @@ from filters.admin_filter import AdminFilter
 from keyboards.inline import (
     get_admin_keyboard, get_admin_stats_keyboard, get_admin_codes_keyboard,
     get_admin_users_keyboard, get_database_admin_keyboard, get_admin_back_keyboard,
-    get_admin_expire_codes_keyboard, get_expire_code_timer_keyboard,
-    get_reset_db_timer_keyboard, get_custom_post_keyboard, get_custom_post_with_button_keyboard
+    get_admin_expire_codes_keyboard, get_expire_code_click_keyboard,
+    get_reset_db_click_keyboard, get_custom_post_keyboard, get_custom_post_with_button_keyboard
 )
 from utils.date_utils import DateTimeUtils
 from utils.broadcast import broadcast_new_code, broadcast_custom_post, update_expired_code_messages
@@ -532,6 +532,8 @@ async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
 
 <b>Активных кодов: {len(codes)}</b>
 
+💡 <i>Нажми на код трижды для подтверждения деактивации</i>
+
 Выбери код для деактивации:""",
         parse_mode="HTML",
         reply_markup=get_admin_expire_codes_keyboard(codes)
@@ -540,49 +542,57 @@ async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# Обработка нажатий на коды для деактивации
+# Обработка кликов по кодам для деактивации (ТРОЙНОЙ КЛИК)
 @router.callback_query(lambda c: c.data and c.data.startswith("expire_code_"), AdminFilter())
-async def expire_code_selected(callback: CallbackQuery):
-    """Код выбран для деактивации - запускаем таймер"""
-    code = callback.data.replace("expire_code_", "")
+async def expire_code_click_handler(callback: CallbackQuery):
+    """Обработка кликов по кодам (тройной клик для валидации)"""
+    parts = callback.data.split("_")
+    code = parts[2]
+    click_count = int(parts[3]) if len(parts) > 3 else 1
     
-    await callback.message.edit_text(
-        f"""⚠️ <b>ВНИМАНИЕ!</b>
+    if click_count == 1:
+        message_text = f"""⚠️ <b>Деактивация кода: {code}</b>
 
-Ты собираешься деактивировать код: <code>{code}</code>
+🔸 <i>Нажми кнопку еще 2 раза для подтверждения</i>
 
 🗑️ <b>Это действие:</b>
 • Удалит код из базы данных
 • Обновит все старые сообщения пользователей
-• Сделает код неактивным навсегда
+• Сделает код неактивным навсегда"""
+    
+    elif click_count == 2:
+        message_text = f"""⚠️ <b>Деактивация кода: {code}</b>
 
-Подтверди действие в течение 5 секунд:""",
+🔸🔸 <i>Нажми кнопку еще 1 раз для подтверждения</i>
+
+🗑️ <b>Это действие необратимо!</b>
+• Код будет полностью удален
+• Все связанные сообщения обновятся
+• Восстановить будет невозможно"""
+    
+    elif click_count >= 3:
+        message_text = f"""❌ <b>ВНИМАНИЕ!</b>
+
+Код <code>{code}</code> готов к деактивации!
+
+🔸🔸🔸 <i>Нажми красную кнопку для окончательного удаления</i>"""
+    
+    else:
+        message_text = f"Выбери код для деактивации:"
+    
+    await callback.message.edit_text(
+        message_text,
         parse_mode="HTML",
-        reply_markup=get_expire_code_timer_keyboard(code, 5)
+        reply_markup=get_expire_code_click_keyboard(code, click_count)
     )
     
-    await callback.answer()
+    await callback.answer("🔸 Клик засчитан" if click_count < 3 else "⚠️ Готов к деактивации!")
 
 
-# Обработка таймера деактивации кода
-@router.callback_query(lambda c: c.data and c.data.startswith("timer_"), AdminFilter())
-async def expire_code_timer(callback: CallbackQuery):
-    """Обработка таймера деактивации"""
-    parts = callback.data.split("_")
-    code = parts[1]
-    seconds_left = int(parts[2])
-    
-    await callback.message.edit_reply_markup(
-        reply_markup=get_expire_code_timer_keyboard(code, seconds_left)
-    )
-    
-    await callback.answer()
-
-
-# Подтверждение деактивации кода
+# Подтверждение деактивации кода (после 3 кликов)
 @router.callback_query(lambda c: c.data and c.data.startswith("confirm_expire_"), AdminFilter())
 async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
-    """Подтверждение деактивации кода"""
+    """Окончательная деактивация кода после тройного клика"""
     code = callback.data.replace("confirm_expire_", "")
     
     try:
@@ -615,6 +625,115 @@ async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
         logger.error(f"Ошибка деактивации кода {code}: {e}")
         await callback.message.edit_text(
             f"❌ <b>Критическая ошибка!</b>\n\nНе удалось деактивировать код <code>{code}</code>.",
+            parse_mode="HTML",
+            reply_markup=get_admin_back_keyboard()
+        )
+    
+    await callback.answer()
+
+
+# Сброс БД с тройным кликом
+@router.callback_query(F.data == "admin_reset_db", AdminFilter())
+async def reset_db_callback(callback: CallbackQuery):
+    """Начать процесс сброса БД с тройным кликом"""
+    await callback.message.edit_text(
+        """🗄️ <b>Сброс базы данных</b>
+
+⚠️ <b>Это критичное действие!</b>
+
+💡 <i>Нажми кнопку трижды для подтверждения</i>
+
+🗑️ <b>Будет удалено:</b>
+• Все промо-коды
+• Все записи сообщений
+
+💾 <b>Будет сохранено:</b>
+• Все пользователи и подписчики""",
+        parse_mode="HTML",
+        reply_markup=get_reset_db_click_keyboard(0)
+    )
+    
+    await callback.answer()
+
+
+# Обработка кликов по кнопке сброса БД (ТРОЙНОЙ КЛИК)
+@router.callback_query(lambda c: c.data and c.data.startswith("reset_click_"), AdminFilter())
+async def reset_db_click_handler(callback: CallbackQuery):
+    """Обработка кликов по кнопке сброса БД (тройной клик для валидации)"""
+    click_count = int(callback.data.replace("reset_click_", ""))
+    
+    if click_count == 1:
+        message_text = """🗄️ <b>Сброс базы данных</b>
+
+🔸 <i>Нажми кнопку еще 2 раза для подтверждения</i>
+
+⚠️ <b>Предупреждение:</b>
+• Все промо-коды будут удалены
+• Все связанные сообщения будут очищены
+• Пользователи останутся в системе"""
+    
+    elif click_count == 2:
+        message_text = """🗄️ <b>Сброс базы данных</b>
+
+🔸🔸 <i>Нажми кнопку еще 1 раз для подтверждения</i>
+
+❌ <b>ПОСЛЕДНЕЕ ПРЕДУПРЕЖДЕНИЕ:</b>
+• Это действие НЕОБРАТИМО
+• Все данные кодов будут потеряны
+• Восстановить будет невозможно"""
+    
+    elif click_count >= 3:
+        message_text = """❌ <b>ВНИМАНИЕ!</b>
+
+База данных готова к сбросу!
+
+🔸🔸🔸 <i>Нажми красную кнопку для окончательного сброса</i>
+
+💀 <b>Все коды будут уничтожены навсегда!</b>"""
+    
+    await callback.message.edit_text(
+        message_text,
+        parse_mode="HTML",
+        reply_markup=get_reset_db_click_keyboard(click_count)
+    )
+    
+    await callback.answer("🔸 Клик засчитан" if click_count < 3 else "💀 База готова к сбросу!")
+
+
+# Окончательный сброс БД (после 3 кликов)
+@router.callback_query(F.data == "confirm_reset_db", AdminFilter())
+async def confirm_reset_db(callback: CallbackQuery):
+    """Окончательный сброс базы данных после тройного клика"""
+    try:
+        success = await db.reset_database()
+        
+        if success:
+            await callback.message.edit_text(
+                """✅ <b>База данных успешно сброшена!</b>
+
+🗑️ <b>Удалено:</b>
+• Все промо-коды
+• Все записи сообщений
+
+💾 <b>Сохранено:</b>
+• Все пользователи и подписчики
+
+🎯 Бот готов к работе с чистой базой данных.""",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+            logger.info(f"База данных сброшена администратором {callback.from_user.id}")
+        else:
+            await callback.message.edit_text(
+                "❌ <b>Ошибка при сбросе базы данных!</b>\n\nПопробуйте еще раз или обратитесь к разработчику.",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при сбросе БД: {e}")
+        await callback.message.edit_text(
+            f"❌ <b>Критическая ошибка при сбросе!</b>\n\nДетали: {str(e)}",
             parse_mode="HTML",
             reply_markup=get_admin_back_keyboard()
         )
@@ -748,84 +867,6 @@ async def process_custom_post_image(message: Message, state: FSMContext, bot: Bo
         )
     
     await state.clear()
-
-
-# Сброс БД с таймером
-@router.callback_query(F.data == "admin_reset_db", AdminFilter())
-async def reset_db_callback(callback: CallbackQuery):
-    """Начать процесс сброса БД с таймером"""
-    await callback.message.edit_text(
-        """⚠️ <b>ВНИМАНИЕ!</b>
-
-Ты собираешься сбросить базу данных!
-
-🗑️ <b>Будет удалено:</b>
-• Все промо-коды
-• Все записи сообщений
-
-💾 <b>Будет сохранено:</b>
-• Все пользователи и подписчики
-
-Подтверди действие в течение 5 секунд:""",
-        parse_mode="HTML",
-        reply_markup=get_reset_db_timer_keyboard(5)
-    )
-    
-    await callback.answer()
-
-
-# Обработка таймера сброса БД
-@router.callback_query(lambda c: c.data and c.data.startswith("reset_timer_"), AdminFilter())
-async def reset_db_timer(callback: CallbackQuery):
-    """Обработка таймера сброса БД"""
-    seconds_left = int(callback.data.replace("reset_timer_", ""))
-    
-    await callback.message.edit_reply_markup(
-        reply_markup=get_reset_db_timer_keyboard(seconds_left)
-    )
-    
-    await callback.answer()
-
-
-# Подтверждение сброса БД
-@router.callback_query(F.data == "confirm_reset_db", AdminFilter())
-async def confirm_reset_db(callback: CallbackQuery):
-    """Подтверждение сброса базы данных"""
-    try:
-        success = await db.reset_database()
-        
-        if success:
-            await callback.message.edit_text(
-                """✅ <b>База данных успешно сброшена!</b>
-
-🗑️ <b>Удалено:</b>
-• Все промо-коды
-• Все записи сообщений
-
-💾 <b>Сохранено:</b>
-• Все пользователи и подписчики
-
-Бот готов к работе с чистой базой данных.""",
-                parse_mode="HTML",
-                reply_markup=get_admin_back_keyboard()
-            )
-            logger.info(f"База данных сброшена администратором {callback.from_user.id}")
-        else:
-            await callback.message.edit_text(
-                "❌ <b>Ошибка при сбросе базы данных!</b>\n\nПопробуйте еще раз или обратитесь к разработчику.",
-                parse_mode="HTML",
-                reply_markup=get_admin_back_keyboard()
-            )
-    
-    except Exception as e:
-        logger.error(f"Ошибка при сбросе БД: {e}")
-        await callback.message.edit_text(
-            f"❌ <b>Критическая ошибка при сбросе!</b>\n\nДетали: {str(e)}",
-            parse_mode="HTML",
-            reply_markup=get_admin_back_keyboard()
-        )
-    
-    await callback.answer()
 
 
 # Возврат в главное меню
