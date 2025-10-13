@@ -107,10 +107,6 @@ def get_custom_post_with_button_keyboard(button_text: str, button_url: str) -> I
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=button_text, url=button_url)
-        ],
-        [
-            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
-            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
         ]
     ])
     

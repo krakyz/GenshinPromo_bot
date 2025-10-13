@@ -84,26 +84,7 @@ async def add_code_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_code_data)
     await callback.answer()
 
-def parse_expiry_date(date_str: str) -> Optional[datetime]:
-    """Парсинг даты истечения из строки"""
-    if not date_str.strip():
-        return None
-    
-    try:
-        date_str = date_str.strip()
-        
-        # Пробуем формат с временем: ДД.ММ.ГГГГ ЧЧ:ММ
-        if len(date_str.split()) == 2:
-            return datetime.strptime(date_str, "%d.%m.%Y %H:%M")
-        
-        # Пробуем формат без времени: ДД.ММ.ГГГГ (устанавливаем время на 23:59)
-        elif len(date_str.split('.')) == 3:
-            date_part = datetime.strptime(date_str, "%d.%m.%Y")
-            return date_part.replace(hour=23, minute=59, second=59)
-        
-        return None
-    except ValueError:
-        return None
+from utils.date_utils import parse_expiry_date
 
 @router.message(AdminStates.waiting_for_code_data, AdminFilter())
 async def process_new_code(message: Message, state: FSMContext, bot: Bot):
