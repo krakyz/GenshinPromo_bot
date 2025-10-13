@@ -5,6 +5,7 @@ import aiosqlite
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from config import DATABASE_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class DatabaseExtension:
     """Расширение для базы данных с методами для работы с сообщениями кодов"""
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
     
     async def save_message_batch(self, message_records: List[Dict[str, Any]]) -> bool:
