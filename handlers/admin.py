@@ -45,39 +45,27 @@ def get_content_hash(text: str) -> str:
 async def safe_edit_message(callback: CallbackQuery, new_text: str, reply_markup=None, parse_mode="HTML"):
     """Безопасное редактирование сообщения с проверкой изменений"""
     try:
-        # Получаем текущий текст сообщения (без HTML разметки для сравнения)
         current_text = callback.message.text or callback.message.caption or ""
-        
-        # Сравниваем хеши контента
         current_hash = get_content_hash(current_text)
         new_hash = get_content_hash(new_text)
         
         if current_hash == new_hash:
-            # Контент не изменился, просто отвечаем на callback
             await callback.answer("ℹ️ Данные актуальны", show_alert=False)
             return True
         
-        # Контент изменился, обновляем сообщение
-        await callback.message.edit_text(
-            new_text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup
-        )
+        await callback.message.edit_text(new_text, parse_mode=parse_mode, reply_markup=reply_markup)
         await callback.answer("✅ Обновлено", show_alert=False)
         return True
         
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
-            # Telegram считает что сообщение не изменилось
             await callback.answer("ℹ️ Данные актуальны", show_alert=False)
             return True
         else:
-            # Другая ошибка Telegram
             logger.error(f"Ошибка Telegram при редактировании сообщения: {e}")
             await callback.answer("❌ Ошибка обновления", show_alert=True)
             return False
     except Exception as e:
-        # Неожиданная ошибка
         logger.error(f"Неожиданная ошибка при редактировании сообщения: {e}")
         await callback.answer("❌ Ошибка обновления", show_alert=True)
         return False
@@ -87,7 +75,6 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
     logger.info(f"Начинаю рассылку нового кода: {code.code}")
     
     try:
-        # Получаем всех подписчиков
         subscribers = await db.get_all_subscribers()
         logger.info(f"Найдено подписчиков: {len(subscribers)}")
         
@@ -106,21 +93,17 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
 📝 <b>Описание:</b> {code.description or 'Промо-код Genshin Impact'}
 """
         
-        # Добавляем информацию о сроке истечения если она есть
         if code.expires_date:
             code_text += f"\n⏰ <b>Действует до:</b> {format_expiry_date(code.expires_date)}"
         
         code_text += "\n\n<i>💡 Нажми кнопку ниже для активации!</i>"
         
-        # Создаем клавиатуру
         keyboard = get_code_activation_keyboard(code.code)
         
-        # Статистика рассылки
         sent_count = 0
         failed_count = 0
         blocked_count = 0
         
-        # Отправляем сообщения всем подписчикам
         for user_id in subscribers:
             try:
                 message = await bot.send_message(
@@ -130,25 +113,20 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
                     reply_markup=keyboard
                 )
                 
-                # Сохраняем связь сообщения с кодом для возможного обновления
-                await db.save_code_message(code.id, user_id, message.message_id)
+                # ОБНОВЛЕНО: Сохраняем код в текстовом виде для обновления
+                await db.save_code_message(code.id, user_id, message.message_id, code.code)
                 
                 sent_count += 1
-                
-                # Небольшая пауза чтобы не превысить лимиты Telegram
-                await asyncio.sleep(0.05)  # 50ms между сообщениями
+                await asyncio.sleep(0.05)
                 
             except TelegramForbiddenError:
-                # Пользователь заблокировал бота
                 blocked_count += 1
                 logger.debug(f"Пользователь {user_id} заблокировал бота")
                 
             except TelegramRetryAfter as e:
-                # Превышен флуд-лимит, ждем
                 logger.warning(f"Флуд-лимит: ждем {e.retry_after} секунд")
                 await asyncio.sleep(e.retry_after)
                 
-                # Повторяем отправку
                 try:
                     message = await bot.send_message(
                         chat_id=user_id,
@@ -156,7 +134,7 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
                         parse_mode="HTML",
                         reply_markup=keyboard
                     )
-                    await db.save_code_message(code.id, user_id, message.message_id)
+                    await db.save_code_message(code.id, user_id, message.message_id, code.code)
                     sent_count += 1
                 except Exception:
                     failed_count += 1
@@ -170,148 +148,80 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
     except Exception as e:
         logger.error(f"Критическая ошибка при рассылке кода: {e}")
 
-async def broadcast_custom_post(bot: Bot, post_data: dict, image_file_id: str, admin_id: int):
-    """Рассылка кастомного поста всем подписчикам"""
-    logger.info(f"Начинаю рассылку поста: {post_data['title']}")
+async def update_expired_code_messages(bot: Bot, code: str, messages_to_update):
+    """ИСПРАВЛЕНА: Обновление старых сообщений при истечении кода"""
+    logger.info(f"Обновляю {len(messages_to_update)} сообщений для истекшего кода: {code}")
     
-    try:
-        # Получаем всех подписчиков
-        subscribers = await db.get_all_subscribers()
-        logger.info(f"Найдено подписчиков для поста: {len(subscribers)}")
-        
-        if not subscribers:
-            logger.warning("Нет подписчиков для рассылки поста")
-            return
-        
-        # Формируем текст поста
-        post_text = f"""
-{post_data['title']}
+    if not messages_to_update:
+        logger.info("Нет сообщений для обновления")
+        return
+    
+    # Формируем текст для истекшего кода
+    expired_text = f"""
+⌛ <b>Промо-код истек</b>
 
-{post_data['text']}
-"""
-        
-        # Выбираем клавиатуру
-        if post_data.get('button_text') and post_data.get('button_url'):
-            keyboard = get_custom_post_with_button_keyboard(
-                post_data['button_text'], 
-                post_data['button_url']
-            )
-        else:
-            keyboard = get_custom_post_keyboard()
-        
-        # Статистика рассылки
-        sent_count = 0
-        failed_count = 0
-        blocked_count = 0
-        
-        # Отправляем пост всем подписчикам
-        for user_id in subscribers:
-            try:
-                if image_file_id:
-                    # Отправляем с изображением
-                    await bot.send_photo(
-                        chat_id=user_id,
-                        photo=image_file_id,
-                        caption=post_text,
-                        parse_mode="HTML",
-                        reply_markup=keyboard
-                    )
-                else:
-                    # Отправляем только текст
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=post_text,
-                        parse_mode="HTML",
-                        reply_markup=keyboard
-                    )
-                
-                sent_count += 1
-                
-                # Пауза между сообщениями
-                await asyncio.sleep(0.05)
-                
-            except TelegramForbiddenError:
-                blocked_count += 1
-                logger.debug(f"Пользователь {user_id} заблокировал бота")
-                
-            except TelegramRetryAfter as e:
-                logger.warning(f"Флуд-лимит при рассылке поста: ждем {e.retry_after} секунд")
-                await asyncio.sleep(e.retry_after)
-                
-                # Повторяем отправку
-                try:
-                    if image_file_id:
-                        await bot.send_photo(
-                            chat_id=user_id,
-                            photo=image_file_id,
-                            caption=post_text,
-                            parse_mode="HTML",
-                            reply_markup=keyboard
-                        )
-                    else:
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text=post_text,
-                            parse_mode="HTML",
-                            reply_markup=keyboard
-                        )
-                    sent_count += 1
-                except Exception:
-                    failed_count += 1
-                    
-            except Exception as e:
-                failed_count += 1
-                logger.error(f"Ошибка отправки поста пользователю {user_id}: {e}")
-        
-        # Отправляем отчет админу
-        report_text = f"""
-✅ <b>Рассылка завершена!</b>
+❌ <b>Код:</b> <code>{code}</code>
 
-📊 <b>Статистика:</b>
-• 📤 Отправлено: {sent_count}
-• ❌ Ошибок: {failed_count}
-• 🚫 Заблокировано: {blocked_count}
-• 👥 Всего подписчиков: {len(subscribers)}
+<i>Этот промо-код больше не действует. Следи за новыми кодами!</i>
 """
-        
-        await bot.send_message(
-            chat_id=admin_id,
-            text=report_text,
-            parse_mode="HTML"
-        )
-        
-        logger.info(f"Рассылка поста завершена. Отправлено: {sent_count}, Ошибок: {failed_count}, Заблокировано: {blocked_count}")
-        
-    except Exception as e:
-        logger.error(f"Критическая ошибка при рассылке поста: {e}")
-        
-        # Уведомляем админа об ошибке
+    
+    # Клавиатура с истекшим кодом
+    keyboard = get_code_activation_keyboard(code, is_expired=True)
+    
+    updated_count = 0
+    failed_count = 0
+    
+    for message_info in messages_to_update:
         try:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=f"❌ <b>Ошибка рассылки!</b>\n\nДетали: {str(e)}",
-                parse_mode="HTML"
+            await bot.edit_message_text(
+                chat_id=message_info.user_id,
+                message_id=message_info.message_id,
+                text=expired_text,
+                parse_mode="HTML",
+                reply_markup=keyboard
             )
-        except:
-            pass
-
-async def update_expired_code_messages(bot: Bot, code: str):
-    """Обновление старых сообщений при истечении кода"""
-    logger.info(f"Обновляю сообщения для истекшего кода: {code}")
+            updated_count += 1
+            
+            # Небольшая пауза между обновлениями
+            await asyncio.sleep(0.05)
+            
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                # Сообщение уже обновлено
+                updated_count += 1
+            elif "message to edit not found" in str(e):
+                # Сообщение удалено пользователем
+                logger.debug(f"Сообщение {message_info.message_id} пользователя {message_info.user_id} удалено")
+            else:
+                failed_count += 1
+                logger.error(f"Ошибка обновления сообщения {message_info.message_id}: {e}")
+                
+        except TelegramForbiddenError:
+            # Пользователь заблокировал бота
+            logger.debug(f"Пользователь {message_info.user_id} заблокировал бота")
+            
+        except TelegramRetryAfter as e:
+            logger.warning(f"Флуд-лимит при обновлении: ждем {e.retry_after} секунд")
+            await asyncio.sleep(e.retry_after)
+            
+            # Повторяем попытку
+            try:
+                await bot.edit_message_text(
+                    chat_id=message_info.user_id,
+                    message_id=message_info.message_id,
+                    text=expired_text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+                updated_count += 1
+            except Exception:
+                failed_count += 1
+                
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Неожиданная ошибка при обновлении сообщения: {e}")
     
-    try:
-        # Получаем все сообщения связанные с этим кодом
-        # Поскольку код уже удален из БД, используем обходной путь
-        # Можно было бы сохранить код_мессаж связи до удаления кода
-        logger.info(f"Код {code} удален из БД, старые сообщения останутся без обновления")
-        
-        # TODO: В будущем можно улучшить логику:
-        # 1. Сначала получать все связанные сообщения
-        # 2. Потом удалять код
-        # 3. Обновлять сообщения на "код истек"
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении сообщений истекшего кода: {e}")
+    logger.info(f"Обновление сообщений завершено. Обновлено: {updated_count}, Ошибок: {failed_count}")
 
 @router.message(Command("admin"), AdminFilter())
 async def admin_panel(message: Message):
@@ -394,7 +304,6 @@ async def process_new_code(message: Message, state: FSMContext, bot: Bot):
         rewards = lines[2].strip()
         expires_date = None
         
-        # Проверяем, указана ли дата истечения
         if len(lines) > 3:
             expires_date = parse_expiry_date(lines[3])
             if lines[3].strip() and not expires_date:
@@ -407,7 +316,6 @@ async def process_new_code(message: Message, state: FSMContext, bot: Bot):
                 )
                 return
         
-        # Создаем объект кода
         new_code = CodeModel(
             code=code,
             description=description,
@@ -415,11 +323,9 @@ async def process_new_code(message: Message, state: FSMContext, bot: Bot):
             expires_date=expires_date
         )
         
-        # Добавляем в базу данных
         code_id = await db.add_code(new_code)
         
         if code_id:
-            # Формиру��м сообщение подтверждения
             confirmation_text = (
                 f"✅ <b>Код успешно добавлен!</b>\n\n"
                 f"🔥 <b>Код:</b> <code>{code}</code>\n"
@@ -434,13 +340,9 @@ async def process_new_code(message: Message, state: FSMContext, bot: Bot):
             
             await message.answer(confirmation_text, parse_mode="HTML")
             
-            # Обновляем объект с ID для рассылки
             new_code.id = code_id
-            
-            # Отправляем уведомление всем подписчикам
             await broadcast_new_code(bot, new_code)
             
-            # Отправляем отчет о рассылке
             subscribers = await db.get_all_subscribers()
             await message.answer(
                 f"📬 <b>Рассылка завершена!</b>\n\n"
@@ -464,9 +366,6 @@ async def process_new_code(message: Message, state: FSMContext, bot: Bot):
         )
     
     await state.clear()
-
-# Остальные обработчики остаются без изменений...
-# (сокращено для экономии места, но все остальные функции нужно скопировать из предыдущего файла)
 
 @router.callback_query(lambda c: c.data == "admin_expire_code", AdminFilter())
 async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
@@ -498,24 +397,33 @@ async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.waiting_for_code_to_expire, AdminFilter())
 async def process_expire_code(message: Message, state: FSMContext, bot: Bot):
-    """Обработка деактивации кода"""
+    """ИСПРАВЛЕНА: Обработка деактивации кода с обновлением сообщений"""
     if message.text == "/cancel":
         await message.answer("❌ Деактивация кода отменена")
         await state.clear()
         return
     
     code = message.text.strip().upper()
-    success = await db.expire_code(code)
+    
+    # ИСПРАВЛЕНО: Теперь получаем как статус, так и сообщения для обновления
+    success, messages_to_update = await db.expire_code(code)
     
     if success:
         await message.answer(
             f"✅ <b>Код удален!</b>\n\n"
-            f"Код <code>{code}</code> полностью удален из базы данных.",
+            f"Код <code>{code}</code> полностью удален из базы данных.\n\n"
+            f"🔄 <b>Обновляю {len(messages_to_update)} старых сообщений...</b>",
             parse_mode="HTML"
         )
         
-        # Обновляем старые сообщения (пока что только логируем)
-        await update_expired_code_messages(bot, code)
+        # Обновляем старые сообщения пользователей
+        await update_expired_code_messages(bot, code, messages_to_update)
+        
+        await message.answer(
+            f"✅ <b>Обновление завершено!</b>\n\n"
+            f"Все старые сообщения с кодом <code>{code}</code> помечены как истекшие.",
+            parse_mode="HTML"
+        )
     else:
         await message.answer(
             f"❌ <b>Ошибка!</b>\n\n"
@@ -525,7 +433,8 @@ async def process_expire_code(message: Message, state: FSMContext, bot: Bot):
     
     await state.clear()
 
-# Добавьте все остальные обработчики из предыдущего файла...
+# Остальные обработчики остаются без изменений...
+# (Добавьте все остальные функции из предыдущего файла)
 
 @router.callback_query(lambda c: c.data == "admin_back", AdminFilter())
 async def admin_back_callback(callback: CallbackQuery, state: FSMContext):
