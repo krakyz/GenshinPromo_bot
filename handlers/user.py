@@ -50,6 +50,8 @@ async def start_handler(message: Message):
 
 📱 <b>Доступные команды:</b>
 /codes - показать все активные коды
+/subscribe - подписаться на уведомления
+/unsubscribe - отписаться от уведомлений
 /help - показать справку
 
 ⏰ <i>Все сроки указаны в московском времени (МСК)</i>
@@ -149,6 +151,8 @@ async def help_handler(message: Message):
 🤖 <b>Основные команды:</b>
 /start - запустить бота
 /codes - показать все активные промо-коды
+/subscribe - подписаться на уведомления
+/unsubscribe - отписаться от уведомлений
 /help - показать эту справку
 
 🎁 <b>Как активировать промо-код:</b>
@@ -189,7 +193,8 @@ async def subscribe_callback(callback: CallbackQuery):
             "Ты подписался на уведомления о новых промо-кодах Genshin Impact!\n"
             "Теперь ты будешь получать уведомления о каждом новом коде.\n\n"
             "⏰ <i>Все сроки указаны в московском времени (МСК)</i>\n\n"
-            "✨ <i>Используй кнопку ниже, чтобы посмотреть все доступные коды!</i>",
+            "✨ <i>Используй кнопку ниже, чтобы посмотреть все доступные коды!</i>\n\n"
+            "💡 <i>Для отписки используй команду /unsubscribe</i>",
             parse_mode="HTML",
             reply_markup=get_subscription_keyboard(is_subscribed=True)  # Теперь подписан
         )
@@ -203,8 +208,6 @@ async def subscribe_callback(callback: CallbackQuery):
     
     await callback.answer("Подписка оформлена! 🎉")
 
-# Убираем все обработчики отписки - больше не нужны
-
 @router.message(Command("subscribe"))
 async def subscribe_command(message: Message):
     """Команда подписки"""
@@ -214,7 +217,8 @@ async def subscribe_command(message: Message):
     if is_subscribed:
         await message.answer(
             "✅ <b>Ты уже подписан!</b>\n\n"
-            "Ты получаешь уведомления о всех новых промо-кодах Genshin Impact.",
+            "Ты получаешь уведомления о всех новых промо-кодах Genshin Impact.\n\n"
+            "💡 <i>Для отписки используй команду /unsubscribe</i>",
             parse_mode="HTML",
             reply_markup=get_subscription_keyboard(is_subscribed=True)
         )
@@ -225,7 +229,8 @@ async def subscribe_command(message: Message):
     if success:
         await message.answer(
             "🔔 <b>Отлично!</b>\n\n"
-            "Ты подписался на уведомления о новых промо-кодах Genshin Impact!",
+            "Ты подписался на уведомления о новых промо-кодах Genshin Impact!\n\n"
+            "💡 <i>Для отписки используй команду /unsubscribe</i>",
             parse_mode="HTML",
             reply_markup=get_subscription_keyboard(is_subscribed=True)
         )
@@ -234,6 +239,40 @@ async def subscribe_command(message: Message):
             "❌ Не удалось подписаться на уведомления. Попробуй позже.",
             parse_mode="HTML",
             reply_markup=get_subscription_keyboard(is_subscribed=False)
+        )
+
+@router.message(Command("unsubscribe"))
+async def unsubscribe_command(message: Message):
+    """Команда отписки"""
+    # Проверяем, подписан ли пользователь
+    is_subscribed = await get_user_subscription_status(message.from_user.id)
+    
+    if not is_subscribed:
+        await message.answer(
+            "ℹ️ <b>Ты не подписан на уведомления</b>\n\n"
+            "Для подписки используй команду /subscribe или нажми кнопку ниже.",
+            parse_mode="HTML",
+            reply_markup=get_subscription_keyboard(is_subscribed=False)
+        )
+        return
+    
+    success = await db.unsubscribe_user(message.from_user.id)
+    
+    if success:
+        await message.answer(
+            "🔕 <b>Готово!</b>\n\n"
+            "Ты отписался от уведомлений о промо-кодах.\n"
+            "Ты все еще можешь просматривать активные коды командой /codes\n\n"
+            "💡 <i>Для повторной подписки используй команду /subscribe</i>",
+            parse_mode="HTML",
+            reply_markup=get_subscription_keyboard(is_subscribed=False)
+        )
+        logger.info(f"Пользователь {message.from_user.id} отписался через команду")
+    else:
+        await message.answer(
+            "❌ Не удалось отписаться от уведомлений. Попробуй позже.",
+            parse_mode="HTML",
+            reply_markup=get_subscription_keyboard(is_subscribed=True)
         )
 
 # Callback для истекших кодов

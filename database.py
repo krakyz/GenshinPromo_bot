@@ -174,46 +174,58 @@ class Database:
                 logger.info(f"Найдено кодов для истечения: {len(codes_to_expire)}")
                 return codes_to_expire
     
-    async def expire_code(self, code: str) -> bool:
-        """Пометить код как истекший"""
+    async def delete_code_completely(self, code: str) -> bool:
+        """ПОЛНОСТЬЮ УДАЛИТЬ код из базы данных (необратимо)"""
         try:
-            moscow_now = get_moscow_time()
             async with aiosqlite.connect(self.db_path) as db:
-                cursor = await db.execute('''
-                    UPDATE codes SET is_active = 0, expired_at = ?
-                    WHERE code = ? AND is_active = 1
-                ''', (serialize_moscow_datetime(moscow_now), code))
+                # Сначала получаем ID кода
+                async with db.execute('SELECT id FROM codes WHERE code = ?', (code,)) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        logger.warning(f"Код {code} не найден для удаления")
+                        return False
+                    
+                    code_id = row[0]
+                
+                # Удаляем связанные сообщения
+                await db.execute('DELETE FROM code_messages WHERE code_id = ?', (code_id,))
+                
+                # Удаляем сам код
+                cursor = await db.execute('DELETE FROM codes WHERE code = ?', (code,))
                 await db.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"Код {code} помечен как истекший в {moscow_now.strftime('%d.%m.%Y %H:%M МСК')}")
+                    logger.info(f"Код {code} ПОЛНОСТЬЮ УДАЛЕН из базы данных")
                     return True
                 else:
-                    logger.warning(f"Активный код {code} не найден")
+                    logger.warning(f"Код {code} не найден для удаления")
                     return False
         except Exception as e:
-            logger.error(f"Ошибка при истечении кода: {e}")
+            logger.error(f"Ошибка при полном удалении кода: {e}")
             return False
     
+    async def expire_code(self, code: str) -> bool:
+        """Пометить код как истекший (старый метод - для совместимости)"""
+        # Теперь используем полное удаление
+        return await self.delete_code_completely(code)
+    
     async def expire_code_by_id(self, code_id: int) -> bool:
-        """Пометить код как истекший по ID"""
+        """Пометить код как истекший по ID (полное удаление)"""
         try:
-            moscow_now = get_moscow_time()
             async with aiosqlite.connect(self.db_path) as db:
-                cursor = await db.execute('''
-                    UPDATE codes SET is_active = 0, expired_at = ?
-                    WHERE id = ? AND is_active = 1
-                ''', (serialize_moscow_datetime(moscow_now), code_id))
-                await db.commit()
+                # Получаем код по ID
+                async with db.execute('SELECT code FROM codes WHERE id = ?', (code_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        logger.warning(f"Код с ID {code_id} не найден")
+                        return False
+                    
+                    code = row[0]
                 
-                if cursor.rowcount > 0:
-                    logger.info(f"Код с ID {code_id} помечен как истекший в {moscow_now.strftime('%d.%m.%Y %H:%M МСК')}")
-                    return True
-                else:
-                    logger.warning(f"Активный код с ID {code_id} не найден")
-                    return False
+                # Используем полное удаление
+                return await self.delete_code_completely(code)
         except Exception as e:
-            logger.error(f"Ошибка при истечении кода: {e}")
+            logger.error(f"Ошибка при удалении кода по ID: {e}")
             return False
     
     async def add_user(self, user: UserModel) -> bool:
@@ -291,6 +303,20 @@ class Database:
             logger.error(f"Ошибка при подписке пользователя: {e}")
             return False
     
+    async def unsubscribe_user(self, user_id: int) -> bool:
+        """ОТПИСАТЬ пользователя от рассылки (только для команды /unsubscribe)"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute('''
+                    UPDATE users SET is_subscribed = 0 WHERE user_id = ?
+                ''', (user_id,))
+                await db.commit()
+                logger.info(f"Пользователь {user_id} отписался от рассылки")
+                return True
+        except Exception as e:
+            logger.error(f"Ошибка при отписке пользователя: {e}")
+            return False
+    
     async def save_code_message(self, code_id: int, user_id: int, message_id: int) -> bool:
         """Сохранить связь между кодом и отправленным сообщением"""
         try:
@@ -341,7 +367,7 @@ class Database:
             return False
     
     async def get_database_stats(self) -> dict:
-        """Получить статистику базы данных"""
+        """Получить статистику базы данных (теперь только активные коды)"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 stats = {}
@@ -349,11 +375,10 @@ class Database:
                 async with db.execute('SELECT COUNT(*) FROM users') as cursor:
                     stats['users'] = (await cursor.fetchone())[0]
                 
+                # Теперь считаем только активные коды (неактивные удалены)
                 async with db.execute('SELECT COUNT(*) FROM codes') as cursor:
                     stats['codes_total'] = (await cursor.fetchone())[0]
-                
-                async with db.execute('SELECT COUNT(*) FROM codes WHERE is_active = 1') as cursor:
-                    stats['codes_active'] = (await cursor.fetchone())[0]
+                    stats['codes_active'] = stats['codes_total']  # Все коды активные
                 
                 async with db.execute('SELECT COUNT(*) FROM code_messages') as cursor:
                     stats['messages'] = (await cursor.fetchone())[0]
