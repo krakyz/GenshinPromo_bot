@@ -85,7 +85,7 @@ class GenshinPromoBot:
 
         # Управление БД
         self.dp.callback_query.register(self.handle_reset_db, F.data == "reset_db", self.is_admin_callback)
-        self.dp.callback_query.register(self.handle_confirm_reset, F.data == "confirm_reset", self.is_admin_callback)
+        # ИСПРАВЛЕНО: убрана регистрация несуществующего метода handle_confirm_reset
 
         # FSM обработчики
         self.dp.message.register(self.process_promo_code, StateFilter(AdminStates.waiting_for_promo_code), self.is_admin)
@@ -144,7 +144,7 @@ class GenshinPromoBot:
 
         builder.adjust(1)
         return builder.as_markup()
-    
+
     # Пользовательские команды
     async def cmd_start(self, message: Message):
         """Команда /start"""
@@ -635,7 +635,7 @@ class GenshinPromoBot:
         await callback.answer()
 
     async def handle_reset_db(self, callback: CallbackQuery, state: FSMContext):
-        """Запрос подтверждения сброса БД"""
+        """ИСПРАВЛЕНО: Используем FSM вместо отдельного callback"""
         await state.set_state(AdminStates.waiting_for_db_reset_confirm)
 
         text = """
