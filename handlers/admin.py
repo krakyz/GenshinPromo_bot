@@ -590,16 +590,55 @@ async def expire_code_click_handler(callback: CallbackQuery):
 
 
 # Подтверждение деактивации кода (после 3 кликов)
-@router.callback_query(lambda c: c.data and c.data.startswith("confirm_expire_"), AdminFilter())
+@router.callback_query(lambda c: c.data and c.data.startswith("confirm_expire_"))
 async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
-    """Окончательная деактивация кода после тройного клика"""
+    """ИСПРАВЛЕННАЯ функция деактивации с обновлением сообщений"""
     code = callback.data.replace("confirm_expire_", "")
     
     try:
-        # Обновляем сообщения ПЕРЕД удалением кода
-        await update_expired_code_messages(bot, code)
+        print(f"🚀 ДЕАКТИВИРУЮ КОД: {code}")
         
-        # Удаляем код
+        # ШАГ 1: ОБНОВЛЯЕМ СООБЩЕНИЯ!
+        print("🔄 Обновляю сообщения пользователей...")
+        
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        # Новый текст для истекшего кода
+        expired_text = f"""❌ <b>Промо-код истек</b>
+
+Код <code>{code}</code> больше недействителен.
+
+🔔 <i>Подпишись на уведомления, чтобы не пропустить новые коды!</i>"""
+
+        # Новая клавиатура для истекшего кода  
+        expired_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"❌ Код истек: {code}", callback_data="expired_code")],
+            [InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")]
+        ])
+        
+        # ПОЛУЧАЕМ И ОБНОВЛЯЕМ СООБЩЕНИЯ
+        messages = await db.get_code_messages_by_value(code)
+        print(f"📨 Найдено сообщений: {len(messages)}")
+        
+        updated_count = 0
+        if messages:
+            for msg in messages:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=msg.user_id,
+                        message_id=msg.message_id, 
+                        text=expired_text,
+                        reply_markup=expired_keyboard,
+                        parse_mode="HTML"
+                    )
+                    updated_count += 1
+                    print(f"✅ Обновлено: пользователь {msg.user_id}")
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    print(f"❌ Ошибка у пользователя {msg.user_id}: {e}")
+        
+        # ШАГ 2: Удаляем код
+        print("🗑️ Удаляю код из БД...")
         success = await db.expire_code(code)
         
         if success:
@@ -607,29 +646,31 @@ async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
                 f"""✅ <b>Код успешно деактивирован!</b>
 
 🗑️ <b>Код:</b> <code>{code}</code>
-🔄 <b>Старые сообщения:</b> Обновлены
-📊 <b>Статус:</b> Полностью удален из базы данных""",
+🔄 <b>Обновлено сообщений:</b> {updated_count}
+📊 <b>Статус:</b> Полностью удален из базы данных
+
+{"🎯 Сообщения обновлены!" if updated_count > 0 else "⚠️ Связанных сообщений не найдено"}""",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+            print(f"✅ КОД {code} ДЕАКТИВИРОВАН! Обновлено: {updated_count}")
+        else:
+            await callback.message.edit_text(
+                f"❌ <b>Ошибка деактивации!</b>\n\nКод <code>{code}</code> не найден.",
                 parse_mode="HTML",
                 reply_markup=get_admin_back_keyboard()
             )
             
-            logger.info(f"Код {code} деактивирован администратором {callback.from_user.id}")
-        else:
-            await callback.message.edit_text(
-                f"❌ <b>Ошибка деактивации!</b>\n\nКод <code>{code}</code> не найден в базе данных.",
-                parse_mode="HTML",
-                reply_markup=get_admin_back_keyboard()
-            )
-    
     except Exception as e:
-        logger.error(f"Ошибка деактивации кода {code}: {e}")
+        print(f"💥 ОШИБКА: {e}")
         await callback.message.edit_text(
-            f"❌ <b>Критическая ошибка!</b>\n\nНе удалось деактивировать код <code>{code}</code>.",
+            f"❌ <b>Критическая ошибка!</b>\n\nДетали: {str(e)}",
             parse_mode="HTML",
             reply_markup=get_admin_back_keyboard()
         )
     
     await callback.answer()
+
 
 
 # Сброс БД с тройным кликом
@@ -901,3 +942,4 @@ async def expired_code_callback(callback: CallbackQuery):
         "⌛ Этот промо-код больше не действует. Следите за новыми кодами!",
         show_alert=True
     )
+
