@@ -597,6 +597,7 @@ async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
     
     try:
         # Обновляем сообщения ПЕРЕД удалением кода
+        from utils.broadcast import update_expired_code_messages
         await update_expired_code_messages(bot, code)
         
         # Удаляем код

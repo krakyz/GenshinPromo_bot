@@ -394,5 +394,32 @@ class Database:
             logger.error(f"Ошибка при получении статистики БД: {e}")
             return {}
 
+    async def get_code_messages_by_value(self, code_value: str) -> List[CodeMessageModel]:
+        """КЛЮЧЕВОЙ МЕТОД: Получает все сообщения связанные с кодом ПО ЕГО ЗНАЧЕНИЮ"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute('''
+                    SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at
+                    FROM code_messages cm
+                    JOIN codes c ON cm.code_id = c.id
+                    WHERE c.code = ? AND c.is_active = 1
+                ''', (code_value,)) as cursor:
+                    rows = await cursor.fetchall()
+                    
+                    messages = []
+                    for row in rows:
+                        message = CodeMessageModel(
+                            id=row[0], code_id=row[1], user_id=row[2],
+                            message_id=row[3], 
+                            created_at=datetime.fromisoformat(row[4]) if row[4] else None
+                        )
+                        messages.append(message)
+                    
+                    return messages
+        except Exception as e:
+            logger.error(f"Ошибка получения сообщений для кода {code_value}: {e}")
+            return []
+
+
 # Создаем глобальный экземпляр базы данных
 db = Database()

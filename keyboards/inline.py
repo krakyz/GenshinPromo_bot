@@ -103,12 +103,11 @@ def get_subscription_keyboard(is_subscribed: bool = False) -> InlineKeyboardMark
 
 # Админские клавиатуры
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Главное меню админ-панели"""
     return KeyboardBuilder.create_keyboard(buttons=[
         [("➕ Добавить код", "admin_add_code"), ("❌ Деактивировать код", "admin_expire_code")],
         [("📊 Статистика", "admin_stats"), ("📋 Активные коды", "admin_active_codes")],
         [("👥 Пользователи", "admin_users"), ("📢 Реклама", "admin_custom_post")],
-        [("🗄️ База данных", "admin_database")]
+        [("🔄 Проверить истекшие", "admin_check_expired"), ("🗄️ База данных", "admin_database")]
     ])
 
 
