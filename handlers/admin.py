@@ -4,6 +4,7 @@ from aiogram.types import Message, CallbackQuery, PhotoSize, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 
 from database import db
 from models import CodeModel
@@ -21,6 +22,7 @@ import logging
 import os
 import aiosqlite
 from typing import Optional
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,50 @@ class AdminStates(StatesGroup):
     waiting_for_custom_post_data = State()
     waiting_for_custom_post_image = State()
     waiting_for_db_reset_confirmation = State()
+
+def get_content_hash(text: str) -> str:
+    """Получить хеш контента для сравнения"""
+    return hashlib.md5(text.encode()).hexdigest()
+
+async def safe_edit_message(callback: CallbackQuery, new_text: str, reply_markup=None, parse_mode="HTML"):
+    """Безопасное редактирование сообщения с проверкой изменений"""
+    try:
+        # Получаем текущий текст сообщения (без HTML разметки для сравнения)
+        current_text = callback.message.text or callback.message.caption or ""
+        
+        # Сравниваем хеши контента
+        current_hash = get_content_hash(current_text)
+        new_hash = get_content_hash(new_text)
+        
+        if current_hash == new_hash:
+            # Контент не изменился, просто отвечаем на callback
+            await callback.answer("ℹ️ Данные актуальны", show_alert=False)
+            return True
+        
+        # Контент изменился, обновляем сообщение
+        await callback.message.edit_text(
+            new_text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
+        await callback.answer("✅ Обновлено", show_alert=False)
+        return True
+        
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Telegram считает что сообщение не изменилось
+            await callback.answer("ℹ️ Данные актуальны", show_alert=False)
+            return True
+        else:
+            # Другая ошибка Telegram
+            logger.error(f"Ошибка Telegram при редактировании сообщения: {e}")
+            await callback.answer("❌ Ошибка обновления", show_alert=True)
+            return False
+    except Exception as e:
+        # Неожиданная ошибка
+        logger.error(f"Неожиданная ошибка при редактировании сообщения: {e}")
+        await callback.answer("❌ Ошибка обновления", show_alert=True)
+        return False
 
 @router.message(Command("admin"), AdminFilter())
 async def admin_panel(message: Message):
@@ -88,42 +134,31 @@ async def admin_stats_callback(callback: CallbackQuery):
         else:
             stats_text += "Нет активных кодов\n"
         
-        await callback.message.edit_text(
-            stats_text,
-            parse_mode="HTML",
-            reply_markup=get_admin_stats_keyboard()
-        )
+        # Используем безопасное редактирование
+        await safe_edit_message(callback, stats_text, get_admin_stats_keyboard())
     
     except Exception as e:
         logger.error(f"Ошибка при получении статистики: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при получении статистики",
-            reply_markup=get_admin_stats_keyboard()
-        )
-    
-    await callback.answer()
+        await callback.answer("❌ Ошибка получения статистики", show_alert=True)
 
 @router.callback_query(lambda c: c.data == "admin_active_codes", AdminFilter())
 async def admin_active_codes_callback(callback: CallbackQuery):
     """Показать все активные коды"""
-    codes = await db.get_active_codes()
-    
-    if not codes:
-        await callback.message.edit_text(
-            "🤷‍♂️ <b>Активных промо-кодов пока нет</b>\n\n"
-            "Добавь новый код через главное меню админки.",
-            parse_mode="HTML",
-            reply_markup=get_admin_codes_keyboard()
-        )
-        await callback.answer()
-        return
-    
-    codes_text = f"📋 <b>Активные промо-коды ({len(codes)}):</b>\n\n"
-    
-    for code in codes:
-        created = code.created_at.strftime('%d.%m.%Y %H:%M МСК') if code.created_at else 'N/A'
-        expires = format_expiry_date(code.expires_date) if code.expires_date else 'Не указано'
-        codes_text += f"""
+    try:
+        codes = await db.get_active_codes()
+        
+        if not codes:
+            codes_text = (
+                "🤷‍♂️ <b>Активных промо-кодов пока нет</b>\n\n"
+                "Добавь новый код через главное меню админки."
+            )
+        else:
+            codes_text = f"📋 <b>Активные промо-коды ({len(codes)}):</b>\n\n"
+            
+            for code in codes:
+                created = code.created_at.strftime('%d.%m.%Y %H:%M МСК') if code.created_at else 'N/A'
+                expires = format_expiry_date(code.expires_date) if code.expires_date else 'Не указано'
+                codes_text += f"""
 🔥 <b>{code.code}</b>
 📝 {code.description}
 💎 {code.rewards}
@@ -131,13 +166,13 @@ async def admin_active_codes_callback(callback: CallbackQuery):
 ⌛ Истекает: {expires}
 ━━━━━━━━━━━━━━━━━━━
 """
+        
+        # Используем безопасное редактирование
+        await safe_edit_message(callback, codes_text, get_admin_codes_keyboard())
     
-    await callback.message.edit_text(
-        codes_text,
-        parse_mode="HTML",
-        reply_markup=get_admin_codes_keyboard()
-    )
-    await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при получении активных кодов: {e}")
+        await callback.answer("❌ Ошибка получения кодов", show_alert=True)
 
 @router.callback_query(lambda c: c.data == "admin_users", AdminFilter())
 async def admin_users_callback(callback: CallbackQuery):
@@ -170,27 +205,20 @@ async def admin_users_callback(callback: CallbackQuery):
         else:
             users_text += "\nПользователи не найдены"
         
-        await callback.message.edit_text(
-            users_text,
-            parse_mode="HTML",
-            reply_markup=get_admin_users_keyboard()
-        )
+        # Используем безопасное редактирование
+        await safe_edit_message(callback, users_text, get_admin_users_keyboard())
     
     except Exception as e:
         logger.error(f"Ошибка при получении информации о пользователях: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при получении информации о пользователях",
-            reply_markup=get_admin_users_keyboard()
-        )
-    
-    await callback.answer()
+        await callback.answer("❌ Ошибка получения пользователей", show_alert=True)
 
 @router.callback_query(lambda c: c.data == "admin_database", AdminFilter())
 async def admin_database_callback(callback: CallbackQuery):
     """Показать меню управления базой данных"""
-    stats = await db.get_database_stats()
-    
-    db_text = f"""
+    try:
+        stats = await db.get_database_stats()
+        
+        db_text = f"""
 🗄️ <b>Управление базой данных</b>
 
 📊 <b>Статистика БД:</b>
@@ -203,13 +231,13 @@ async def admin_database_callback(callback: CallbackQuery):
 • Скачать файл базы данных
 • Сбросить БД (удалить коды и сообщения, сохранить пользователей)
 """
+        
+        # Используем безопасное редактирование
+        await safe_edit_message(callback, db_text, get_database_admin_keyboard())
     
-    await callback.message.edit_text(
-        db_text,
-        parse_mode="HTML",
-        reply_markup=get_database_admin_keyboard()
-    )
-    await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики БД: {e}")
+        await callback.answer("❌ Ошибка получения статистики БД", show_alert=True)
 
 @router.callback_query(lambda c: c.data == "admin_download_db", AdminFilter())
 async def download_db_callback(callback: CallbackQuery):
@@ -242,12 +270,7 @@ async def download_db_callback(callback: CallbackQuery):
         
     except Exception as e:
         logger.error(f"Ошибка при отправке файла БД: {e}")
-        await callback.message.edit_text(
-            "❌ <b>Ошибка при отправке файла!</b>\n\n"
-            f"Детали: {str(e)}",
-            parse_mode="HTML",
-            reply_markup=get_database_admin_keyboard()
-        )
+        await callback.answer("❌ Ошибка отправки файла", show_alert=True)
     
     await callback.answer()
 
@@ -343,22 +366,25 @@ async def admin_back_callback(callback: CallbackQuery, state: FSMContext):
     # Очищаем любые активные состояния при возврате в главное меню
     await state.clear()
     
-    await callback.message.edit_text(
-        "🔧 <b>Админ-панель бота Genshin Impact кодов</b>\n\n"
-        "👋 Привет, администратор!\n\n"
-        "📊 <b>Доступные действия:</b>\n"
-        "• Добавить новый промо-код\n"
-        "• Деактивировать истекший код\n"
-        "• Просмотреть статистику бота\n"
-        "• Показать все активные коды\n"
-        "• Управление пользователями\n"
-        "• Создать рекламный пост\n"
-        "• Управление базой данных\n\n"
-        "Выбери действие из меню ниже:",
-        parse_mode="HTML",
-        reply_markup=get_admin_keyboard()
-    )
-    await callback.answer()
+    admin_text = """
+🔧 <b>Админ-панель бота Genshin Impact кодов</b>
+
+👋 Привет, администратор!
+
+📊 <b>Доступные действия:</b>
+• Добавить новый промо-код
+• Деактивировать истекший код
+• Просмотреть статистику бота
+• Показать все активные коды
+• Управление пользователями
+• Создать рекламный пост
+• Управление базой данных
+
+Выбери действие из меню ниже:
+"""
+    
+    # Используем безопасное редактирование
+    await safe_edit_message(callback, admin_text, get_admin_keyboard())
 
 # Команда для отмены текущего действия
 @router.message(Command("cancel"), AdminFilter())
