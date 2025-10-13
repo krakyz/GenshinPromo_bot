@@ -1,222 +1,82 @@
-from aiogram import Router
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery
-from aiogram.fsm.context import FSMContext
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+from datetime import datetime
 
+from config import BOT_TOKEN
 from database import db
-from models import UserModel
-from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_codes_navigation_keyboard
+from handlers import user, admin
 
-router = Router()
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-@router.message(CommandStart())
-async def start_handler(message: Message):
-    """Обработчик команды /start"""
-    user = UserModel(
-        user_id=message.from_user.id,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name
-    )
+async def check_expired_codes(bot: Bot):
+    """Периодическая проверка истекших кодов"""
+    while True:
+        try:
+            # Получаем коды, которые должны истечь
+            codes_to_expire = await db.get_codes_to_expire()
+            
+            for code in codes_to_expire:
+                logger.info(f"Автоматически истекает код: {code.code}")
+                
+                # Помечаем код как истекший
+                success = await db.expire_code_by_id(code.id)
+                
+                if success:
+                    # Обновляем все старые сообщения с этим кодом
+                    from handlers.admin import update_expired_code_messages
+                    await update_expired_code_messages(bot, code.code)
+                    logger.info(f"Код {code.code} автоматически истек и сообщения обновлены")
+                
+                # Небольшая пауза между обработкой кодов
+                await asyncio.sleep(1)
+            
+            # Проверяем каждые 5 минут
+            await asyncio.sleep(300)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проверке истекших кодов: {e}")
+            await asyncio.sleep(60)  # При ошибке ждем минуту перед повтором
+
+async def main():
+    """Основная функция запуска бота"""
     
-    await db.add_user(user)
+    # Инициализация бота и диспетчера
+    bot = Bot(token=BOT_TOKEN)
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
     
-    welcome_text = f"""
-🎮 <b>Добро пожаловать в бот промо-кодов Genshin Impact!</b>
-
-Привет, {message.from_user.first_name}! 👋
-
-Этот бот поможет тебе не пропустить ни одного промо-кода для Genshin Impact!
-
-🔔 <b>Что я умею:</b>
-• Отправляю уведомления о новых промо-кодах
-• Показываю активные коды с кнопками для активации
-• Помогаю управлять подпиской на уведомления
-
-📱 <b>Доступные команды:</b>
-/codes - показать все активные коды
-/subscribe - подписаться на уведомления
-/unsubscribe - отписаться от уведомлений
-/help - показать справку
-
-Удачи в путешествии по Тейвату! ✨
-"""
+    # Подключение роутеров
+    dp.include_router(user.router)
+    dp.include_router(admin.router)
     
-    await message.answer(
-        welcome_text,
-        parse_mode="HTML",
-        reply_markup=get_subscription_keyboard()
-    )
-
-@router.message(Command("codes"))
-@router.callback_query(lambda c: c.data == "view_all_codes")
-async def codes_handler(update):
-    """Обработчик команды /codes - показать активные коды"""
-    codes = await db.get_active_codes()
+    # Инициализация базы данных
+    await db.init_db()
     
-    # Определяем тип обновления (сообщение или callback)
-    if isinstance(update, Message):
-        message = update
-        edit_message = False
-    else:  # CallbackQuery
-        message = update.message
-        edit_message = True
-        await update.answer()
+    logger.info("Бот запущен с полным функционалом управления БД")
     
-    if not codes:
-        text = (
-            "🤷‍♂️ <b>Активных промо-кодов пока нет</b>\n\n"
-            "Подпишись на уведомления, чтобы узнать о новых кодах первым!"
-        )
-        keyboard = get_subscription_keyboard()
-        
-        if edit_message:
-            await message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-        else:
-            await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-        return
+    # Запускаем фоновую задачу проверки истекших кодов
+    expiry_task = asyncio.create_task(check_expired_codes(bot))
     
-    # Отправляем информационное сообщение
-    info_text = (
-        f"🎁 <b>Найдено активных кодов: {len(codes)}</b>\n\n"
-        "Нажми на кнопку под кодом для активации:"
-    )
-    
-    if edit_message:
-        await message.edit_text(info_text, parse_mode="HTML", reply_markup=get_codes_navigation_keyboard())
-    else:
-        await message.answer(info_text, parse_mode="HTML")
-    
-    # Отправляем каждый код отдельным сообщением
-    for code in codes:
-        code_text = f"""
-🔥 <b>Код:</b> <code>{code.code}</code>
+    try:
+        # Запуск поллинга
+        await dp.start_polling(bot)
+    finally:
+        # Отменяем фоновую задачу при остановке
+        expiry_task.cancel()
+        await bot.session.close()
 
-💎 <b>Награды:</b> {code.rewards or 'Не указано'}
-
-📝 <b>Описание:</b> {code.description or 'Промо-код Genshin Impact'}
-
-<i>💡 Нажми кнопку ниже для активации!</i>
-"""
-        
-        await message.answer(
-            code_text,
-            parse_mode="HTML",
-            reply_markup=get_code_activation_keyboard(code.code)
-        )
-
-@router.message(Command("help"))
-async def help_handler(message: Message):
-    """Обработчик команды /help"""
-    help_text = """
-📚 <b>Справка по боту Genshin Impact промо-кодов</b>
-
-🤖 <b>Основные команды:</b>
-/start - запустить бота и подписаться
-/codes - показать все активные промо-коды
-/subscribe - подписаться на уведомления о новых кодах
-/unsubscribe - отписаться от уведомлений
-/help - показать эту справку
-
-🎁 <b>Как активировать промо-код:</b>
-1. Получи код через этого бота
-2. Нажми кнопку "Активировать код"
-3. Войди в свой аккаунт HoYoverse
-4. Выбери сервер и введи никнейм персонажа
-5. Получи награды в игре через почту
-
-⚠️ <b>Важно знать:</b>
-• Каждый код можно использовать только один раз
-• Коды имеют ограниченное время действия
-• Для активации нужен Adventure Rank 10+
-
-📢 <b>Уведомления:</b>
-Подпишись, чтобы получать мгновенные уведомления о новых промо-кодах!
-
-🎮 Удачи в Genshin Impact!
-"""
-    
-    await message.answer(
-        help_text,
-        parse_mode="HTML",
-        reply_markup=get_subscription_keyboard()
-    )
-
-@router.callback_query(lambda c: c.data == "subscribe")
-async def subscribe_callback(callback: CallbackQuery):
-    """Обработчик подписки на уведомления"""
-    success = await db.subscribe_user(callback.from_user.id)
-    
-    if success:
-        await callback.message.edit_text(
-            "🔔 <b>Отлично!</b>\n\n"
-            "Ты подписался на уведомления о новых промо-кодах Genshin Impact!\n"
-            "Теперь ты будешь получать уведомления о каждом новом коде.",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
-        )
-    else:
-        await callback.message.edit_text(
-            "❌ <b>Ошибка</b>\n\n"
-            "Не удалось подписаться на уведомления. Попробуй позже.",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
-        )
-    
-    await callback.answer()
-
-@router.callback_query(lambda c: c.data == "unsubscribe")
-async def unsubscribe_callback(callback: CallbackQuery):
-    """Обработчик отписки от уведомлений"""
-    success = await db.unsubscribe_user(callback.from_user.id)
-    
-    if success:
-        await callback.message.edit_text(
-            "🔕 <b>Готово!</b>\n\n"
-            "Ты отписался от уведомлений о промо-кодах.\n"
-            "Ты все еще можешь просматривать активные коды командой /codes",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
-        )
-    else:
-        await callback.message.edit_text(
-            "❌ <b>Ошибка</b>\n\n"
-            "Не удалось отписаться от уведомлений. Попробуй позже.",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
-        )
-    
-    await callback.answer()
-
-@router.message(Command("subscribe"))
-async def subscribe_command(message: Message):
-    """Команда подписки"""
-    success = await db.subscribe_user(message.from_user.id)
-    
-    if success:
-        await message.answer(
-            "🔔 <b>Отлично!</b>\n\n"
-            "Ты подписался на уведомления о новых промо-кодах Genshin Impact!",
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(
-            "❌ Не удалось подписаться на уведомления. Попробуй позже.",
-            parse_mode="HTML"
-        )
-
-@router.message(Command("unsubscribe"))
-async def unsubscribe_command(message: Message):
-    """Команда отписки"""
-    success = await db.unsubscribe_user(message.from_user.id)
-    
-    if success:
-        await message.answer(
-            "🔕 <b>Готово!</b>\n\n"
-            "Ты отписался от уведомлений о промо-кодах.",
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(
-            "❌ Не удалось отписаться от уведомлений. Попробуй позже.",
-            parse_mode="HTML"
-        )
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        raise

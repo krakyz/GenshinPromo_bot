@@ -58,6 +58,9 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
             InlineKeyboardButton(text="📢 Реклама", callback_data="admin_custom_post")
+        ],
+        [
+            InlineKeyboardButton(text="🗄️ База данных", callback_data="admin_database")
         ]
     ])
     
@@ -74,22 +77,41 @@ def get_codes_navigation_keyboard() -> InlineKeyboardMarkup:
     
     return keyboard
 
-def get_custom_post_keyboard(button_text: str = None, button_url: str = None) -> InlineKeyboardMarkup:
-    """Создает клавиатуру для кастомного поста с необязательной кнопкой"""
-    inline_keyboard = []
+def get_database_admin_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для управления базой данных"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📥 Скачать БД", callback_data="admin_download_db"),
+            InlineKeyboardButton(text="🗑️ Сбросить БД", callback_data="admin_reset_db")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
     
-    # Добавляем кнопку если указаны текст и URL
-    if button_text and button_url:
-        inline_keyboard.append([
-            InlineKeyboardButton(text=button_text, url=button_url)
-        ])
-    
-    # Добавляем стандартные кнопки навигации
-    inline_keyboard.extend([
+    return keyboard
+
+def get_custom_post_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для кастомного поста"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
             InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
         ]
     ])
     
-    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+    return keyboard
+
+def get_custom_post_with_button_keyboard(button_text: str, button_url: str) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для кастомного поста с дополнительной кнопкой"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=button_text, url=button_url)
+        ],
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
+            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        ]
+    ])
+    
+    return keyboard

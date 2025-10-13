@@ -33,21 +33,6 @@ class UserModel:
             self.joined_at = datetime.now()
 
 @dataclass
-class CustomPostModel:
-    """Модель для кастомного рекламного поста"""
-    id: Optional[int] = None
-    title: str = ""
-    text: str = ""
-    image_path: Optional[str] = None
-    button_text: Optional[str] = None
-    button_url: Optional[str] = None
-    created_at: Optional[datetime] = None
-    
-    def __post_init__(self):
-        if self.created_at is None:
-            self.created_at = datetime.now()
-
-@dataclass
 class CodeMessageModel:
     """Модель для отслеживания отправленных сообщений с кодами"""
     id: Optional[int] = None

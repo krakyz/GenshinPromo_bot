@@ -1,8 +1,8 @@
 import aiosqlite
 import logging
 from typing import List, Optional, Tuple
-from datetime import datetime, timedelta
-from models import CodeModel, UserModel, CustomPostModel, CodeMessageModel
+from datetime import datetime
+from models import CodeModel, UserModel, CodeMessageModel
 from config import DATABASE_PATH
 import os
 
@@ -40,19 +40,6 @@ class Database:
                     first_name TEXT,
                     is_subscribed BOOLEAN DEFAULT 1,
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Таблица для кастомных постов
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS custom_posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    image_path TEXT,
-                    button_text TEXT,
-                    button_url TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
@@ -275,28 +262,6 @@ class Database:
             logger.error(f"Ошибка при подписке пользователя: {e}")
             return False
     
-    async def add_custom_post(self, post: CustomPostModel) -> bool:
-        """Добавить кастомный пост для рассылки"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute('''
-                    INSERT INTO custom_posts (title, text, image_path, button_text, button_url, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (
-                    post.title,
-                    post.text,
-                    post.image_path,
-                    post.button_text,
-                    post.button_url,
-                    post.created_at
-                ))
-                await db.commit()
-                logger.info(f"Добавлен кастомный пост: {post.title}")
-                return True
-        except Exception as e:
-            logger.error(f"Ошибка при добавлении кастомного поста: {e}")
-            return False
-    
     async def save_code_message(self, code_id: int, user_id: int, message_id: int) -> bool:
         """Сохранить связь между кодом и отправленным сообщением"""
         try:
@@ -332,19 +297,57 @@ class Database:
                     for row in rows
                 ]
     
-    async def save_image(self, file_path: str, file_id: str) -> bool:
-        """Сохранить путь к изображению"""
+    async def reset_database(self) -> bool:
+        """Сброс базы данных (удаление всех данных кроме пользователей)"""
         try:
-            # Создаем папку для изображений если её нет
-            images_dir = "images"
-            if not os.path.exists(images_dir):
-                os.makedirs(images_dir)
-            
-            logger.info(f"Изображение сохранено: {file_path}, file_id: {file_id}")
-            return True
+            async with aiosqlite.connect(self.db_path) as db:
+                # Удаляем все записи из таблиц, кроме пользователей
+                await db.execute('DELETE FROM code_messages')
+                await db.execute('DELETE FROM codes')
+                
+                # Сбрасываем автоинкремент для таблиц
+                await db.execute('DELETE FROM sqlite_sequence WHERE name IN ("codes", "code_messages")')
+                
+                await db.commit()
+                logger.info("База данных сброшена (пользователи сохранены)")
+                return True
         except Exception as e:
-            logger.error(f"Ошибка при сохранении изображения: {e}")
+            logger.error(f"Ошибка при сбросе базы данных: {e}")
             return False
+    
+    async def get_database_stats(self) -> dict:
+        """Получить статистику базы данных"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                stats = {}
+                
+                # Количество пользователей
+                async with db.execute('SELECT COUNT(*) FROM users') as cursor:
+                    stats['users'] = (await cursor.fetchone())[0]
+                
+                # Количество кодов
+                async with db.execute('SELECT COUNT(*) FROM codes') as cursor:
+                    stats['codes_total'] = (await cursor.fetchone())[0]
+                
+                # Количество активных кодов
+                async with db.execute('SELECT COUNT(*) FROM codes WHERE is_active = 1') as cursor:
+                    stats['codes_active'] = (await cursor.fetchone())[0]
+                
+                # Количество записей сообщений
+                async with db.execute('SELECT COUNT(*) FROM code_messages') as cursor:
+                    stats['messages'] = (await cursor.fetchone())[0]
+                
+                # Размер файла базы данных
+                if os.path.exists(self.db_path):
+                    size_bytes = os.path.getsize(self.db_path)
+                    stats['file_size'] = f"{size_bytes / 1024:.1f} KB"
+                else:
+                    stats['file_size'] = "0 KB"
+                
+                return stats
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики БД: {e}")
+            return {}
 
 # Создаем глобальный экземпляр базы данных
 db = Database()

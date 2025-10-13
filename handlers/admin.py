@@ -1,18 +1,24 @@
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, PhotoSize
+from aiogram.types import Message, CallbackQuery, PhotoSize, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram import Bot
 
 from database import db
-from models import CodeModel, CustomPostModel
+from models import CodeModel
 from filters.admin_filter import AdminFilter
-from keyboards.inline import get_admin_keyboard, get_code_activation_keyboard, get_custom_post_keyboard
+from keyboards.inline import (
+    get_admin_keyboard, get_code_activation_keyboard, 
+    get_database_admin_keyboard, get_custom_post_keyboard,
+    get_custom_post_with_button_keyboard
+)
 from datetime import datetime
 import asyncio
 import logging
 import os
+import aiosqlite
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,7 @@ async def admin_panel(message: Message):
 • Показать все активные коды
 • Управление пользователями
 • Создать рекламный пост
+• Управление базой данных
 
 Выбери действие из меню ниже:
 """
@@ -58,17 +65,133 @@ async def add_code_callback(callback: CallbackQuery, state: FSMContext):
         "Отправь данные о промо-коде в следующем формате:\n\n"
         "<code>КОД\n"
         "Описание кода\n"
-        "Награды</code>\n\n"
-        "<b>Пример:</b>\n"
+        "Награды\n"
+        "Дата истечения (необязательно)</code>\n\n"
+        "<b>Пример без даты истечения:</b>\n"
         "<code>GENSHINGIFT\n"
         "Стандартный промо-код\n"
         "50 Примогемов + 3 Книги героя</code>\n\n"
+        "<b>Пример с датой истечения:</b>\n"
+        "<code>LIMITEDCODE\n"
+        "Ограниченный промо-код\n"
+        "100 Примогемов + 5 Книг героя\n"
+        "15.10.2025 23:59</code>\n\n"
+        "Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ или ДД.ММ.ГГГГ\n\n"
         "Или отправь /cancel для отмены",
         parse_mode="HTML"
     )
     
     await state.set_state(AdminStates.waiting_for_code_data)
     await callback.answer()
+
+def parse_expiry_date(date_str: str) -> Optional[datetime]:
+    """Парсинг даты истечения из строки"""
+    if not date_str.strip():
+        return None
+    
+    try:
+        date_str = date_str.strip()
+        
+        # Пробуем формат с временем: ДД.ММ.ГГГГ ЧЧ:ММ
+        if len(date_str.split()) == 2:
+            return datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+        
+        # Пробуем формат без времени: ДД.ММ.ГГГГ (устанавливаем время на 23:59)
+        elif len(date_str.split('.')) == 3:
+            date_part = datetime.strptime(date_str, "%d.%m.%Y")
+            return date_part.replace(hour=23, minute=59, second=59)
+        
+        return None
+    except ValueError:
+        return None
+
+@router.message(AdminStates.waiting_for_code_data, AdminFilter())
+async def process_new_code(message: Message, state: FSMContext, bot: Bot):
+    """Обработка нового кода от админа"""
+    if message.text == "/cancel":
+        await message.answer("❌ Добавление кода отменено")
+        await state.clear()
+        return
+    
+    try:
+        lines = message.text.strip().split('\n')
+        if len(lines) < 3:
+            await message.answer(
+                "❌ <b>Неверный формат!</b>\n\n"
+                "Нужно минимум 3 строки:\n"
+                "1. Код\n"
+                "2. Описание\n"
+                "3. Награды\n"
+                "4. Дата истечения (необязательно)",
+                parse_mode="HTML"
+            )
+            return
+        
+        code = lines[0].strip().upper()
+        description = lines[1].strip()
+        rewards = lines[2].strip()
+        expires_date = None
+        
+        # Проверяем, указана ли дата истечения
+        if len(lines) > 3:
+            expires_date = parse_expiry_date(lines[3])
+            if lines[3].strip() and not expires_date:
+                await message.answer(
+                    "❌ <b>Неверный формат даты!</b>\n\n"
+                    "Используй формат:\n"
+                    "• <code>15.10.2025 23:59</code> (с временем)\n"
+                    "• <code>15.10.2025</code> (без времени, истечет в 23:59)",
+                    parse_mode="HTML"
+                )
+                return
+        
+        # Создаем объект кода
+        new_code = CodeModel(
+            code=code,
+            description=description,
+            rewards=rewards,
+            expires_date=expires_date
+        )
+        
+        # Добавляем в базу данных
+        code_id = await db.add_code(new_code)
+        
+        if code_id:
+            # Формируем сообщение подтверждения
+            confirmation_text = (
+                f"✅ <b>Код успешно добавлен!</b>\n\n"
+                f"🔥 <b>Код:</b> <code>{code}</code>\n"
+                f"📝 <b>Описание:</b> {description}\n"
+                f"💎 <b>Награды:</b> {rewards}"
+            )
+            
+            if expires_date:
+                confirmation_text += f"\n⏰ <b>Истекает:</b> {expires_date.strftime('%d.%m.%Y %H:%M')}"
+            
+            await message.answer(confirmation_text, parse_mode="HTML")
+            
+            # Обновляем объект с ID для рассылки
+            new_code.id = code_id
+            
+            # Отправляем уведомление всем подписчикам
+            await broadcast_new_code(bot, new_code)
+            
+        else:
+            await message.answer(
+                f"❌ <b>Ошибка!</b>\n\n"
+                f"Код <code>{code}</code> уже существует в базе данных.",
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении кода: {e}")
+        await message.answer(
+            "❌ <b>Произошла ошибка при добавлении кода</b>\n\n"
+            "Проверь формат и попробуй еще раз.",
+            parse_mode="HTML"
+        )
+    
+    await state.clear()
 
 @router.callback_query(lambda c: c.data == "admin_custom_post", AdminFilter())
 async def custom_post_callback(callback: CallbackQuery, state: FSMContext):
@@ -94,70 +217,6 @@ async def custom_post_callback(callback: CallbackQuery, state: FSMContext):
     
     await state.set_state(AdminStates.waiting_for_custom_post_data)
     await callback.answer()
-
-@router.message(AdminStates.waiting_for_code_data, AdminFilter())
-async def process_new_code(message: Message, state: FSMContext, bot: Bot):
-    """Обработка нового кода от админа"""
-    if message.text == "/cancel":
-        await message.answer("❌ Добавление кода отменено")
-        await state.clear()
-        return
-    
-    try:
-        lines = message.text.strip().split('\n')
-        if len(lines) < 3:
-            await message.answer(
-                "❌ <b>Неверный формат!</b>\n\n"
-                "Нужно минимум 3 строки:\n"
-                "1. Код\n"
-                "2. Описание\n"
-                "3. Награды",
-                parse_mode="HTML"
-            )
-            return
-        
-        code = lines[0].strip().upper()
-        description = lines[1].strip()
-        rewards = lines[2].strip()
-        
-        # Создаем объект кода
-        new_code = CodeModel(
-            code=code,
-            description=description,
-            rewards=rewards
-        )
-        
-        # Добавляем в базу данных
-        success = await db.add_code(new_code)
-        
-        if success:
-            await message.answer(
-                f"✅ <b>Код успешно добавлен!</b>\n\n"
-                f"🔥 <b>Код:</b> <code>{code}</code>\n"
-                f"📝 <b>Описание:</b> {description}\n"
-                f"💎 <b>Награды:</b> {rewards}",
-                parse_mode="HTML"
-            )
-            
-            # Отправляем уведомление всем подписчикам
-            await broadcast_new_code(bot, new_code)
-            
-        else:
-            await message.answer(
-                f"❌ <b>Ошибка!</b>\n\n"
-                f"Код <code>{code}</code> уже существует в базе данных.",
-                parse_mode="HTML"
-            )
-    
-    except Exception as e:
-        logger.error(f"Ошибка при добавлении кода: {e}")
-        await message.answer(
-            "❌ <b>Произошла ошибка при добавлении кода</b>\n\n"
-            "Проверь формат и попробуй еще раз.",
-            parse_mode="HTML"
-        )
-    
-    await state.clear()
 
 @router.message(AdminStates.waiting_for_custom_post_data, AdminFilter())
 async def process_custom_post_data(message: Message, state: FSMContext):
@@ -220,7 +279,7 @@ async def process_custom_post_data(message: Message, state: FSMContext):
 
 @router.message(AdminStates.waiting_for_custom_post_image, AdminFilter())
 async def process_custom_post_image(message: Message, state: FSMContext, bot: Bot):
-    """Обработка изображения для кастомного поста"""
+    """Обработка изображения для кастомного поста и немедленная отправка"""
     if message.text == "/cancel":
         await message.answer("❌ Создание поста отменено")
         await state.clear()
@@ -246,39 +305,19 @@ async def process_custom_post_image(message: Message, state: FSMContext, bot: Bo
         return
     
     try:
-        # Создаем объект поста
-        custom_post = CustomPostModel(
-            title=data['title'],
-            text=data['text'],
-            image_path=image_file_id,  # Сохраняем file_id как путь
-            button_text=data.get('button_text'),
-            button_url=data.get('button_url')
+        await message.answer(
+            f"✅ <b>Пост готов к отправке!</b>\n\n"
+            f"📢 <b>Заголовок:</b> {data['title']}\n"
+            f"📝 <b>Текст:</b> {data['text']}\n"
+            f"📸 <b>Изображение:</b> {'Да' if image_file_id else 'Нет'}\n"
+            f"🔗 <b>Кнопка:</b> {data.get('button_text') if data.get('button_text') else 'Нет'}\n\n"
+            "🚀 <b>Начинаю рассылку...</b>",
+            parse_mode="HTML"
         )
         
-        # Сохраняем в базу данных
-        success = await db.add_custom_post(custom_post)
+        # Отправляем рассылку немедленно без сохранения в БД
+        await broadcast_custom_post(bot, data, image_file_id, message.from_user.id)
         
-        if success:
-            await message.answer(
-                f"✅ <b>Пост создан успешно!</b>\n\n"
-                f"📢 <b>Заголовок:</b> {custom_post.title}\n"
-                f"📝 <b>Текст:</b> {custom_post.text}\n"
-                f"📸 <b>Изображение:</b> {'Да' if image_file_id else 'Нет'}\n"
-                f"🔗 <b>Кнопка:</b> {custom_post.button_text if custom_post.button_text else 'Нет'}\n\n"
-                "🚀 <b>Начинаю рассылку...</b>",
-                parse_mode="HTML"
-            )
-            
-            # Отправляем рассылку
-            await broadcast_custom_post(bot, custom_post, message.from_user.id)
-            
-        else:
-            await message.answer(
-                "❌ <b>Ошибка при сохранении поста</b>\n\n"
-                "Попробуй еще раз.",
-                parse_mode="HTML"
-            )
-    
     except Exception as e:
         logger.error(f"Ошибка при создании поста: {e}")
         await message.answer(
@@ -329,12 +368,13 @@ async def process_expire_code(message: Message, state: FSMContext, bot: Bot):
     if success:
         await message.answer(
             f"✅ <b>Код деактивирован!</b>\n\n"
-            f"Код <code>{code}</code> помечен как истекший.",
+            f"Код <code>{code}</code> помечен как истекший.\n\n"
+            f"🔄 <b>Обновляю сообщения пользователей...</b>",
             parse_mode="HTML"
         )
         
-        # Уведомляем подписчиков об истечении кода
-        await broadcast_expired_code(bot, code)
+        # Обновляем старые сообщения вместо отправки новых
+        await update_expired_code_messages(bot, code)
     else:
         await message.answer(
             f"❌ <b>Ошибка!</b>\n\n"
@@ -344,15 +384,154 @@ async def process_expire_code(message: Message, state: FSMContext, bot: Bot):
     
     await state.clear()
 
+@router.callback_query(lambda c: c.data == "admin_database", AdminFilter())
+async def admin_database_callback(callback: CallbackQuery):
+    """Показать меню управления базой данных"""
+    stats = await db.get_database_stats()
+    
+    db_text = f"""
+🗄️ <b>Управление базой данных</b>
+
+📊 <b>Статистика БД:</b>
+• 👥 Пользователи: {stats.get('users', 0)}
+• 🎁 Всего кодов: {stats.get('codes_total', 0)}
+• ✅ Активных кодов: {stats.get('codes_active', 0)}
+• 📨 Записей сообщений: {stats.get('messages', 0)}
+• 💾 Размер файла: {stats.get('file_size', '0 KB')}
+
+⚠️ <b>Доступные операции:</b>
+• Скачать файл базы данных
+• Сбросить БД (удалить коды и сообщения, сохранить пользователей)
+"""
+    
+    await callback.message.edit_text(
+        db_text,
+        parse_mode="HTML",
+        reply_markup=get_database_admin_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "admin_download_db", AdminFilter())
+async def download_db_callback(callback: CallbackQuery):
+    """Отправить файл базы данных администратору"""
+    try:
+        if not os.path.exists(db.db_path):
+            await callback.message.edit_text(
+                "❌ <b>Файл базы данных не найден!</b>",
+                parse_mode="HTML",
+                reply_markup=get_database_admin_keyboard()
+            )
+            await callback.answer()
+            return
+        
+        # Отправляем файл
+        file = FSInputFile(db.db_path, filename="genshin_codes.db")
+        await callback.message.answer_document(
+            document=file,
+            caption="📥 <b>Файл базы данных</b>\n\nСкачан: " + datetime.now().strftime('%d.%m.%Y %H:%M'),
+            parse_mode="HTML"
+        )
+        
+        await callback.message.edit_text(
+            "✅ <b>Файл базы данных отправлен!</b>",
+            parse_mode="HTML",
+            reply_markup=get_database_admin_keyboard()
+        )
+        
+        logger.info(f"Файл БД отправлен администратору {callback.from_user.id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при отправке файла БД: {e}")
+        await callback.message.edit_text(
+            "❌ <b>Ошибка при отправке файла!</b>\n\n"
+            f"Детали: {str(e)}",
+            parse_mode="HTML",
+            reply_markup=get_database_admin_keyboard()
+        )
+    
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "admin_reset_db", AdminFilter())
+async def reset_db_callback(callback: CallbackQuery):
+    """Сброс базы данных с подтверждением"""
+    await callback.message.edit_text(
+        "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        "Вы собираетесь сбросить базу данных!\n\n"
+        "🗑️ <b>Будет удалено:</b>\n"
+        "• Все промо-коды\n"
+        "• Все записи сообщений\n\n"
+        "💾 <b>Будет сохранено:</b>\n"
+        "• Все пользователи и подписчики\n\n"
+        "Для подтверждения отправь команду:\n"
+        "<code>/confirm_reset_db</code>\n\n"
+        "Для отмены нажми 'Назад'",
+        parse_mode="HTML",
+        reply_markup=get_database_admin_keyboard()
+    )
+    await callback.answer()
+
+@router.message(Command("confirm_reset_db"), AdminFilter())
+async def confirm_reset_db(message: Message):
+    """Подтверждение сброса базы данных"""
+    try:
+        success = await db.reset_database()
+        
+        if success:
+            await message.answer(
+                "✅ <b>База данных успешно сброшена!</b>\n\n"
+                "🗑️ <b>Удалено:</b>\n"
+                "• Все промо-коды\n"
+                "• Все записи сообщений\n\n"
+                "💾 <b>Сохранено:</b>\n"
+                "• Все пользователи и подписчики\n\n"
+                "Бот готов к работе с чистой базой данных.",
+                parse_mode="HTML",
+                reply_markup=get_admin_keyboard()
+            )
+            logger.info(f"База данных сброшена администратором {message.from_user.id}")
+        else:
+            await message.answer(
+                "❌ <b>Ошибка при сбросе базы данных!</b>\n\n"
+                "Попробуйте еще раз или обратитесь к разработчику.",
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при сбросе БД: {e}")
+        await message.answer(
+            "❌ <b>Критическая ошибка при сбросе!</b>\n\n"
+            f"Детали: {str(e)}",
+            parse_mode="HTML"
+        )
+
+@router.callback_query(lambda c: c.data == "admin_back", AdminFilter())
+async def admin_back_callback(callback: CallbackQuery):
+    """Возврат в главное меню админа"""
+    await callback.message.edit_text(
+        "🔧 <b>Админ-панель бота Genshin Impact кодов</b>\n\n"
+        "👋 Привет, администратор!\n\n"
+        "📊 <b>Доступные действия:</b>\n"
+        "• Добавить новый промо-код\n"
+        "• Деактивировать истекший код\n"
+        "• Просмотреть статистику бота\n"
+        "• Показать все активные коды\n"
+        "• Управление пользователями\n"
+        "• Создать рекламный пост\n"
+        "• Управление базой данных\n\n"
+        "Выбери действие из меню ниже:",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard()
+    )
+    await callback.answer()
+
+# Остальные функции остаются прежними...
 @router.callback_query(lambda c: c.data == "admin_stats", AdminFilter())
 async def admin_stats_callback(callback: CallbackQuery):
     """Показать статистику бота"""
     try:
-        # Получаем количество активных кодов
         active_codes = await db.get_active_codes()
         active_count = len(active_codes)
         
-        # Получаем статистику пользователей
         total_users, subscribers_count, _ = await db.get_user_stats()
         
         stats_text = f"""
@@ -369,7 +548,8 @@ async def admin_stats_callback(callback: CallbackQuery):
         if active_codes:
             for code in active_codes:
                 created = code.created_at.strftime('%d.%m') if code.created_at else 'N/A'
-                stats_text += f"• <code>{code.code}</code> (добавлен {created})\n"
+                expires = code.expires_date.strftime('%d.%m %H:%M') if code.expires_date else 'Не указано'
+                stats_text += f"• <code>{code.code}</code> (добавлен {created}, истекает {expires})\n"
         else:
             stats_text += "Нет активных кодов\n"
         
@@ -451,11 +631,13 @@ async def admin_active_codes_callback(callback: CallbackQuery):
     
     for code in codes:
         created = code.created_at.strftime('%d.%m.%Y %H:%M') if code.created_at else 'N/A'
+        expires = code.expires_date.strftime('%d.%m.%Y %H:%M') if code.expires_date else 'Не указано'
         codes_text += f"""
 🔥 <b>{code.code}</b>
 📝 {code.description}
 💎 {code.rewards}
 ⏰ Добавлен: {created}
+⌛ Истекает: {expires}
 ━━━━━━━━━━━━━━━━━━━
 """
     
@@ -467,13 +649,14 @@ async def admin_active_codes_callback(callback: CallbackQuery):
     await callback.answer()
 
 async def broadcast_new_code(bot: Bot, code: CodeModel):
-    """Рассылка нового кода всем подписчикам без даты"""
+    """Рассылка нового кода всем подписчикам с сохранением message_id"""
     subscribers = await db.get_all_subscribers()
     
     if not subscribers:
         logger.info("Нет подписчиков для рассылки")
         return
     
+    # Формируем текст сообщения
     broadcast_text = f"""
 🎉 <b>НОВЫЙ ПРОМО-КОД GENSHIN IMPACT!</b>
 
@@ -482,25 +665,31 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
 💎 <b>Награды:</b> {code.rewards}
 
 📝 <b>Описание:</b> {code.description}
-
-⚡ <b>Активируй быстрее!</b> Промо-коды имеют ограниченное время действия.
-
-💡 <i>Нажми кнопку ниже для мгновенной активации!</i>
 """
+    
+    # Добавляем информацию о сроке истечения если она есть
+    if code.expires_date:
+        broadcast_text += f"\n⏰ <b>Действует до:</b> {code.expires_date.strftime('%d.%m.%Y %H:%M')}"
+    
+    broadcast_text += "\n\n⚡ <b>Активируй быстрее!</b> Промо-коды имеют ограниченное время действия.\n\n💡 <i>Нажми кнопку ниже для мгновенной активации!</i>"
     
     successful_sends = 0
     failed_sends = 0
     
     for user_id in subscribers:
         try:
-            await bot.send_message(
+            sent_message = await bot.send_message(
                 chat_id=user_id,
                 text=broadcast_text,
                 parse_mode="HTML",
                 reply_markup=get_code_activation_keyboard(code.code)
             )
+            
+            # Сохраняем связь между кодом и сообщением
+            if code.id and sent_message.message_id:
+                await db.save_code_message(code.id, user_id, sent_message.message_id)
+            
             successful_sends += 1
-            # Небольшая задержка, чтобы не превысить лимиты API
             await asyncio.sleep(0.05)
         except Exception as e:
             logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
@@ -508,8 +697,74 @@ async def broadcast_new_code(bot: Bot, code: CodeModel):
     
     logger.info(f"Рассылка завершена: {successful_sends} успешно, {failed_sends} неудачно")
 
-async def broadcast_custom_post(bot: Bot, post: CustomPostModel, admin_id: int):
-    """Рассылка кастомного поста всем подписчикам"""
+async def update_expired_code_messages(bot: Bot, code: str):
+    """Обновление старых сообщений при истечении кода"""
+    # Получаем ID кода по его строковому значению
+    async with aiosqlite.connect(db.db_path) as database:
+        async with database.execute('''
+            SELECT id, code, description, rewards, expires_date
+            FROM codes
+            WHERE code = ? AND is_active = 0
+        ''', (code,)) as cursor:
+            rows = await cursor.fetchall()
+            if rows:
+                row = rows[0]
+                code_id = row[0]
+                code_obj = CodeModel(
+                    id=row[0],
+                    code=row[1],
+                    description=row[2],
+                    rewards=row[3],
+                    expires_date=datetime.fromisoformat(row[4]) if row[4] else None
+                )
+            else:
+                logger.warning(f"Код {code} не найден для обновления сообщений")
+                return
+    
+    # Получаем все сообщения связанные с этим кодом
+    code_messages = await db.get_code_messages(code_id)
+    
+    if not code_messages:
+        logger.info(f"Нет сообщений для обновления по коду {code}")
+        return
+    
+    # Формируем обновленный текст
+    expired_text = f"""
+❌ <b>ПРОМО-КОД ИСТЕК</b>
+
+🔥 <b>Код:</b> <code>{code_obj.code}</code>
+
+💎 <b>Награды:</b> {code_obj.rewards}
+
+📝 <b>Описание:</b> {code_obj.description}
+
+⌛ <b>Этот код больше не действует</b>
+
+💡 <i>Следи за уведомлениями, чтобы не пропустить новые коды!</i>
+"""
+    
+    updated_count = 0
+    failed_count = 0
+    
+    for message in code_messages:
+        try:
+            await bot.edit_message_text(
+                chat_id=message.user_id,
+                message_id=message.message_id,
+                text=expired_text,
+                parse_mode="HTML",
+                reply_markup=get_code_activation_keyboard(code_obj.code, is_expired=True)
+            )
+            updated_count += 1
+            await asyncio.sleep(0.03)  # Небольшая задержка
+        except Exception as e:
+            logger.warning(f"Не удалось обновить сообщение {message.message_id} для пользователя {message.user_id}: {e}")
+            failed_count += 1
+    
+    logger.info(f"Обновление сообщений по коду {code}: {updated_count} успешно, {failed_count} неудачно")
+
+async def broadcast_custom_post(bot: Bot, post_data: dict, image_file_id: str, admin_id: int):
+    """Рассылка кастомного поста всем подписчикам без сохранения в БД"""
     subscribers = await db.get_all_subscribers()
     
     if not subscribers:
@@ -518,9 +773,9 @@ async def broadcast_custom_post(bot: Bot, post: CustomPostModel, admin_id: int):
     
     # Формируем текст поста
     post_text = f"""
-📢 <b>{post.title}</b>
+📢 <b>{post_data['title']}</b>
 
-{post.text}
+{post_data['text']}
 """
     
     successful_sends = 0
@@ -529,13 +784,19 @@ async def broadcast_custom_post(bot: Bot, post: CustomPostModel, admin_id: int):
     for user_id in subscribers:
         try:
             # Определяем клавиатуру
-            keyboard = get_custom_post_keyboard(post.button_text, post.button_url)
+            if post_data.get('button_text') and post_data.get('button_url'):
+                keyboard = get_custom_post_with_button_keyboard(
+                    post_data['button_text'], 
+                    post_data['button_url']
+                )
+            else:
+                keyboard = get_custom_post_keyboard()
             
-            if post.image_path:
+            if image_file_id:
                 # Отправляем с изображением
                 await bot.send_photo(
                     chat_id=user_id,
-                    photo=post.image_path,
+                    photo=image_file_id,
                     caption=post_text,
                     parse_mode="HTML",
                     reply_markup=keyboard
@@ -550,7 +811,6 @@ async def broadcast_custom_post(bot: Bot, post: CustomPostModel, admin_id: int):
                 )
             
             successful_sends += 1
-            # Небольшая задержка, чтобы не превысить лимиты API
             await asyncio.sleep(0.05)
         except Exception as e:
             logger.warning(f"Не удалось отправить пост пользователю {user_id}: {e}")
@@ -565,37 +825,11 @@ async def broadcast_custom_post(bot: Bot, post: CustomPostModel, admin_id: int):
 • Ошибок: {failed_sends}
 • Всего подписчиков: {len(subscribers)}
 
-📢 <b>Пост:</b> "{post.title}"
+📢 <b>Пост:</b> "{post_data['title']}"
 """
     
     await bot.send_message(admin_id, result_text, parse_mode="HTML")
     logger.info(f"Рассылка поста завершена: {successful_sends} успешно, {failed_sends} неудачно")
-
-async def broadcast_expired_code(bot: Bot, code: str):
-    """Уведомление об истечении кода"""
-    subscribers = await db.get_all_subscribers()
-    
-    if not subscribers:
-        return
-    
-    expired_text = f"""
-⏰ <b>ПРОМО-КОД ИСТЕК</b>
-
-❌ Код <code>{code}</code> больше не активен.
-
-🔔 Следи за уведомлениями, чтобы не пропустить новые коды!
-"""
-    
-    for user_id in subscribers:
-        try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=expired_text,
-                parse_mode="HTML"
-            )
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            logger.warning(f"Не удалось отправить уведомление об истечении пользователю {user_id}: {e}")
 
 # Команда для отмены текущего действия
 @router.message(Command("cancel"), AdminFilter())
@@ -606,4 +840,13 @@ async def cancel_admin_action(message: Message, state: FSMContext):
         "❌ <b>Действие отменено</b>",
         parse_mode="HTML",
         reply_markup=get_admin_keyboard()
+    )
+
+# Callback для обработки нажатий на истекшие коды
+@router.callback_query(lambda c: c.data == "expired_code")
+async def expired_code_callback(callback: CallbackQuery):
+    """Обработчик нажатий на истекшие коды"""
+    await callback.answer(
+        "⌛ Этот промо-код больше не действует. Следите за новыми кодами!",
+        show_alert=True
     )
