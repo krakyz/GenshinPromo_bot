@@ -49,7 +49,6 @@ class Database:
                 CREATE TABLE IF NOT EXISTS code_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code_id INTEGER NOT NULL,
-                    code_text TEXT NOT NULL,
                     user_id INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -175,32 +174,6 @@ class Database:
                 logger.info(f"Найдено кодов для истечения: {len(codes_to_expire)}")
                 return codes_to_expire
     
-    async def get_code_messages_before_delete(self, code: str) -> List[CodeMessageModel]:
-        """НОВАЯ ФУНКЦИЯ: Получить все сообщения кода ПЕРЕД его удалением"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute('''
-                SELECT cm.id, cm.code_id, cm.code_text, cm.user_id, cm.message_id, cm.created_at
-                FROM code_messages cm
-                JOIN codes c ON cm.code_id = c.id
-                WHERE c.code = ? AND c.is_active = 1
-            ''', (code,)) as cursor:
-                rows = await cursor.fetchall()
-                messages = []
-                for row in rows:
-                    message_model = CodeMessageModel(
-                        id=row[0],
-                        code_id=row[1],
-                        user_id=row[3],
-                        message_id=row[4],
-                        created_at=datetime.fromisoformat(row[5]) if row[5] else None
-                    )
-                    # Добавляем дополнительное поле с текстом кода
-                    message_model.code_text = row[2]
-                    messages.append(message_model)
-                
-                logger.info(f"Найдено {len(messages)} сообщений для кода {code}")
-                return messages
-    
     async def delete_code_completely(self, code: str) -> bool:
         """ПОЛНОСТЬЮ УДАЛИТЬ код из базы данных (необратимо)"""
         try:
@@ -231,28 +204,13 @@ class Database:
             logger.error(f"Ошибка при полном удалении кода: {e}")
             return False
     
-    async def expire_code(self, code: str) -> Tuple[bool, List[CodeMessageModel]]:
-        """Пометить код как истекший и получить связанные сообщения"""
-        try:
-            # СНАЧАЛА получаем все сообщения связанные с кодом
-            messages = await self.get_code_messages_before_delete(code)
-            
-            # ПОТОМ удаляем код
-            success = await self.delete_code_completely(code)
-            
-            if success:
-                logger.info(f"Код {code} истек, найдено {len(messages)} сообщений для обновления")
-                return True, messages
-            else:
-                logger.warning(f"Не удалось истечь код {code}")
-                return False, []
-                
-        except Exception as e:
-            logger.error(f"Ошибка при истечении кода: {e}")
-            return False, []
+    async def expire_code(self, code: str) -> bool:
+        """Пометить код как истекший (старый метод - для совместимости)"""
+        # Теперь используем полное удаление
+        return await self.delete_code_completely(code)
     
-    async def expire_code_by_id(self, code_id: int) -> Tuple[bool, List[CodeMessageModel]]:
-        """Пометить код как истекший по ID и получить связанные сообщения"""
+    async def expire_code_by_id(self, code_id: int) -> bool:
+        """Пометить код как истекший по ID (полное удаление)"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 # Получаем код по ID
@@ -260,15 +218,15 @@ class Database:
                     row = await cursor.fetchone()
                     if not row:
                         logger.warning(f"Код с ID {code_id} не найден")
-                        return False, []
+                        return False
                     
                     code = row[0]
                 
-                # Используем обычный метод expire_code
-                return await self.expire_code(code)
+                # Используем полное удаление
+                return await self.delete_code_completely(code)
         except Exception as e:
             logger.error(f"Ошибка при удалении кода по ID: {e}")
-            return False, []
+            return False
     
     async def add_user(self, user: UserModel) -> bool:
         """Добавить нового пользователя"""
@@ -359,14 +317,14 @@ class Database:
             logger.error(f"Ошибка при отписке пользователя: {e}")
             return False
     
-    async def save_code_message(self, code_id: int, user_id: int, message_id: int, code_text: str) -> bool:
-        """Сохранить связь между кодом и отправленным сообщением (ОБНОВЛЕНО)"""
+    async def save_code_message(self, code_id: int, user_id: int, message_id: int) -> bool:
+        """Сохранить связь между кодом и отправленным сообщением"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute('''
-                    INSERT INTO code_messages (code_id, code_text, user_id, message_id, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (code_id, code_text, user_id, message_id, datetime.utcnow().isoformat()))
+                    INSERT INTO code_messages (code_id, user_id, message_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (code_id, user_id, message_id, datetime.utcnow().isoformat()))
                 await db.commit()
                 logger.debug(f"Сохранена связь: код {code_id}, пользователь {user_id}, сообщение {message_id}")
                 return True
