@@ -1,24 +1,57 @@
 import os
+from dataclasses import dataclass, field
+from typing import List
 from dotenv import load_dotenv
 
+# Загружаем переменные из .env файла
 load_dotenv()
 
-# Основные настройки
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_IDS = list(map(int, os.getenv('ADMIN_IDS', '').split(','))) if os.getenv('ADMIN_IDS') else []
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'genshin_codes.db')
+@dataclass
+class Config:
+    # Токен бота (получить у @BotFather)
+    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
-# Дополнительные настройки
-IMAGES_DIR = os.getenv('IMAGES_DIR', 'images')
-MAX_IMAGE_SIZE = int(os.getenv('MAX_IMAGE_SIZE', '10485760'))  # 10MB
+    # ID администраторов (можно несколько, через запятую)
+    ADMIN_IDS: List[int] = field(default_factory=lambda: [int(x.strip()) for x in os.getenv("ADMIN_IDS", "123456789").split(",") if x.strip()])
 
-# Создаем папку для изображений
-if not os.path.exists(IMAGES_DIR):
-    os.makedirs(IMAGES_DIR)
+    # Настройки базы данных
+    DATABASE_PATH: str = "bot_database.db"
 
-# Валидация
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден в переменных окружения")
+    # Часовой пояс (Москва)
+    TIMEZONE: str = "Europe/Moscow"
 
-if not ADMIN_IDS:
-    raise ValueError("ADMIN_IDS не найдены в переменных окружения")
+    # Настройки рассылки
+    MAX_MESSAGES_PER_SECOND: int = 20  # Лимит Telegram API
+    BROADCAST_DELAY: float = 0.05  # Задержка между сообщениями
+
+    # Тексты сообщений
+    WELCOME_MESSAGE: str = """🎮 Добро пожаловать в бота с промокодами Genshin Impact!
+
+🔔 Подпишитесь на рассылку, чтобы получать актуальные промокоды
+💎 Все промокоды проверяются и обновляются автоматически
+⏰ Уведомления о истечении кодов приходят в реальном времени"""
+
+    SUBSCRIBE_SUCCESS: str = "✅ Вы успешно подписались на рассылку промокодов!"
+    UNSUBSCRIBE_SUCCESS: str = "❌ Вы отписались от рассылки промокодов."
+    ALREADY_SUBSCRIBED: str = "ℹ️ Вы уже подписаны на рассылку."
+    NOT_SUBSCRIBED: str = "ℹ️ Вы не подписаны на рассылку."
+
+    # Шаблон для промокода
+    PROMO_TEMPLATE: str = """🎁 **Новый промокод Genshin Impact!**
+
+🔑 Код: `{code}`
+📋 Описание: {description}
+⏳ Истекает: {expiry_date}
+🌍 Сервер: Глобальный (кроме Китая)
+
+Нажмите на кнопку ниже для активации кода!"""
+
+    EXPIRED_PROMO_TEMPLATE: str = """❌ **Промокод истек**
+
+🔑 Код: `{code}`
+📋 Описание: {description}
+⏳ Истек: {expiry_date}
+
+К сожалению, этот промокод больше недоступен."""
+
+config = Config()
