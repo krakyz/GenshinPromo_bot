@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 
 from database import db
 from models import UserModel
-from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard
+from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_codes_navigation_keyboard
 
 router = Router()
 
@@ -48,25 +48,45 @@ async def start_handler(message: Message):
     )
 
 @router.message(Command("codes"))
-async def codes_handler(message: Message):
+@router.callback_query(lambda c: c.data == "view_all_codes")
+async def codes_handler(update):
     """Обработчик команды /codes - показать активные коды"""
     codes = await db.get_active_codes()
     
+    # Определяем тип обновления (сообщение или callback)
+    if isinstance(update, Message):
+        message = update
+        edit_message = False
+    else:  # CallbackQuery
+        message = update.message
+        edit_message = True
+        await update.answer()
+    
     if not codes:
-        await message.answer(
+        text = (
             "🤷‍♂️ <b>Активных промо-кодов пока нет</b>\n\n"
-            "Подпишись на уведомления, чтобы узнать о новых кодах первым!",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
+            "Подпишись на уведомления, чтобы узнать о новых кодах первым!"
         )
+        keyboard = get_subscription_keyboard()
+        
+        if edit_message:
+            await message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
         return
     
-    await message.answer(
+    # Отправляем информационное сообщение
+    info_text = (
         f"🎁 <b>Найдено активных кодов: {len(codes)}</b>\n\n"
-        "Нажми на кнопку под кодом для активации:",
-        parse_mode="HTML"
+        "Нажми на кнопку под кодом для активации:"
     )
     
+    if edit_message:
+        await message.edit_text(info_text, parse_mode="HTML", reply_markup=get_codes_navigation_keyboard())
+    else:
+        await message.answer(info_text, parse_mode="HTML")
+    
+    # Отправляем каждый код отдельным сообщением
     for code in codes:
         code_text = f"""
 🔥 <b>Код:</b> <code>{code.code}</code>
@@ -74,8 +94,6 @@ async def codes_handler(message: Message):
 💎 <b>Награды:</b> {code.rewards or 'Не указано'}
 
 📝 <b>Описание:</b> {code.description or 'Промо-код Genshin Impact'}
-
-⏰ <b>Добавлен:</b> {code.created_at.strftime('%d.%m.%Y %H:%M') if code.created_at else 'Не указано'}
 
 <i>💡 Нажми кнопку ниже для активации!</i>
 """

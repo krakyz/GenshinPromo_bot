@@ -1,9 +1,10 @@
 import aiosqlite
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
-from models import CodeModel, UserModel
+from models import CodeModel, UserModel, CustomPostModel
 from config import DATABASE_PATH
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,19 @@ class Database:
                     first_name TEXT,
                     is_subscribed BOOLEAN DEFAULT 1,
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Таблица для кастомных постов
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS custom_posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    image_path TEXT,
+                    button_text TEXT,
+                    button_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
@@ -142,6 +156,37 @@ class Database:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
     
+    async def get_user_stats(self) -> Tuple[int, int, List[dict]]:
+        """Получить статистику пользователей: всего, подписчиков, последние 5"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Общее количество пользователей
+            async with db.execute('SELECT COUNT(*) FROM users') as cursor:
+                total_users = (await cursor.fetchone())[0]
+            
+            # Количество подписчиков
+            async with db.execute('SELECT COUNT(*) FROM users WHERE is_subscribed = 1') as cursor:
+                subscribers_count = (await cursor.fetchone())[0]
+            
+            # Последние 5 пользователей
+            async with db.execute('''
+                SELECT user_id, username, first_name, is_subscribed, joined_at
+                FROM users
+                ORDER BY joined_at DESC
+                LIMIT 5
+            ''') as cursor:
+                recent_users_rows = await cursor.fetchall()
+                recent_users = []
+                for row in recent_users_rows:
+                    recent_users.append({
+                        'user_id': row[0],
+                        'username': row[1],
+                        'first_name': row[2],
+                        'is_subscribed': bool(row[3]),
+                        'joined_at': datetime.fromisoformat(row[4]) if row[4] else None
+                    })
+            
+            return total_users, subscribers_count, recent_users
+    
     async def unsubscribe_user(self, user_id: int) -> bool:
         """Отписать пользователя от рассылки"""
         try:
@@ -168,6 +213,44 @@ class Database:
                 return True
         except Exception as e:
             logger.error(f"Ошибка при подписке пользователя: {e}")
+            return False
+    
+    async def add_custom_post(self, post: CustomPostModel) -> bool:
+        """Добавить кастомный пост для рассылки"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute('''
+                    INSERT INTO custom_posts (title, text, image_path, button_text, button_url, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    post.title,
+                    post.text,
+                    post.image_path,
+                    post.button_text,
+                    post.button_url,
+                    post.created_at
+                ))
+                await db.commit()
+                logger.info(f"Добавлен кастомный пост: {post.title}")
+                return True
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении кастомного поста: {e}")
+            return False
+    
+    async def save_image(self, file_path: str, file_id: str) -> bool:
+        """Сохранить путь к изображению"""
+        try:
+            # Создаем папку для изображений если её нет
+            images_dir = "images"
+            if not os.path.exists(images_dir):
+                os.makedirs(images_dir)
+            
+            # Сохраняем информацию о файле в базе данных или файле
+            # В реальном проекте здесь можно сохранить file_id для повторного использования
+            logger.info(f"Изображение сохранено: {file_path}, file_id: {file_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении изображения: {e}")
             return False
 
 # Создаем глобальный экземпляр базы данных

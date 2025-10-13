@@ -1,14 +1,18 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 def get_code_activation_keyboard(code: str) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с кнопкой активации кода"""
+    """Создает клавиатуру с кнопкой активации кода и дополнительными опциями"""
     activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"🎁 Активировать код: {code}",
             url=activation_url
-        )]
+        )],
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
+            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        ]
     ])
     
     return keyboard
@@ -19,6 +23,9 @@ def get_subscription_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe"),
             InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        ],
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
         ]
     ])
     
@@ -34,7 +41,42 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
             InlineKeyboardButton(text="📋 Активные коды", callback_data="admin_active_codes")
+        ],
+        [
+            InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
+            InlineKeyboardButton(text="📢 Реклама", callback_data="admin_custom_post")
         ]
     ])
     
     return keyboard
+
+def get_codes_navigation_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для навигации после просмотра кодов"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe"),
+            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        ]
+    ])
+    
+    return keyboard
+
+def get_custom_post_keyboard(button_text: str = None, button_url: str = None) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для кастомного поста с необязательной кнопкой"""
+    inline_keyboard = []
+    
+    # Добавляем кнопку если указаны текст и URL
+    if button_text and button_url:
+        inline_keyboard.append([
+            InlineKeyboardButton(text=button_text, url=button_url)
+        ])
+    
+    # Добавляем стандартные кнопки навигации
+    inline_keyboard.extend([
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
+            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        ]
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
