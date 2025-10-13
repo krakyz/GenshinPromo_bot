@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 
 from database import db
 from models import UserModel
-from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_codes_navigation_keyboard
+from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_all_codes_keyboard
 
 router = Router()
 
@@ -50,7 +50,7 @@ async def start_handler(message: Message):
 @router.message(Command("codes"))
 @router.callback_query(lambda c: c.data == "view_all_codes")
 async def codes_handler(update):
-    """Обработчик команды /codes - показать активные коды"""
+    """Обработчик команды /codes - показать все активные коды одним сообщением"""
     codes = await db.get_active_codes()
     
     # Определяем тип обновления (сообщение или callback)
@@ -75,38 +75,35 @@ async def codes_handler(update):
             await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
         return
     
-    # Отправляем информационное сообщение
-    info_text = (
-        f"🎁 <b>Найдено активных кодов: {len(codes)}</b>\n\n"
-        "Нажми на кнопку под кодом для активации:"
-    )
+    # Формируем текст со всеми кодами
+    codes_text = f"🎁 <b>Активные промо-коды ({len(codes)}):</b>\n\n"
     
-    if edit_message:
-        await message.edit_text(info_text, parse_mode="HTML", reply_markup=get_codes_navigation_keyboard())
-    else:
-        await message.answer(info_text, parse_mode="HTML")
-    
-    # Отправляем каждый код отдельным сообщением
-    for code in codes:
-        code_text = f"""
-🔥 <b>Код:</b> <code>{code.code}</code>
-
-💎 <b>Награды:</b> {code.rewards or 'Не указано'}
-
-📝 <b>Описание:</b> {code.description or 'Промо-код Genshin Impact'}
-"""
+    for i, code in enumerate(codes, 1):
+        codes_text += f"<b>{i}. {code.code}</b>\n"
+        
+        # Добавляем награды если указаны
+        if code.rewards:
+            codes_text += f"💎 {code.rewards}\n"
+        
+        # Добавляем описание если указано
+        if code.description and code.description != code.code:
+            codes_text += f"📝 {code.description}\n"
         
         # Добавляем информацию о сроке истечения если она есть
         if code.expires_date:
-            code_text += f"\n⏰ <b>Действует до:</b> {code.expires_date.strftime('%d.%m.%Y %H:%M')}"
+            codes_text += f"⏰ Действует до: {code.expires_date.strftime('%d.%m.%Y %H:%M')}\n"
         
-        code_text += "\n\n<i>💡 Нажми кнопку ниже для активации!</i>"
-        
-        await message.answer(
-            code_text,
-            parse_mode="HTML",
-            reply_markup=get_code_activation_keyboard(code.code)
-        )
+        codes_text += "\n"
+    
+    codes_text += "💡 <i>Нажми на кнопку с кодом ниже для активации!</i>"
+    
+    # Создаем клавиатуру со всеми кодами
+    keyboard = get_all_codes_keyboard(codes)
+    
+    if edit_message:
+        await message.edit_text(codes_text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await message.answer(codes_text, parse_mode="HTML", reply_markup=keyboard)
 
 @router.message(Command("help"))
 async def help_handler(message: Message):
@@ -123,7 +120,7 @@ async def help_handler(message: Message):
 
 🎁 <b>Как активировать промо-код:</b>
 1. Получи код через этого бота
-2. Нажми кнопку "Активировать код"
+2. Нажми кнопку с названием кода
 3. Войди в свой аккаунт HoYoverse
 4. Выбери сервер и введи никнейм персонажа
 5. Получи награды в игре через почту
