@@ -1,5 +1,5 @@
 """
-Исправленный database.py с функциями для работы с сообщениями кодов
+База данных с миграцией для добавления недостающей колонки code_value
 """
 import aiosqlite
 import logging
@@ -13,13 +13,13 @@ import os
 logger = logging.getLogger(__name__)
 
 class Database:
-    """Класс для работы с SQLite базой данных"""
+    """Класс для работы с SQLite базой данных с поддержкой миграций"""
     
     def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
         
     async def init_db(self):
-        """Инициализация базы данных с созданием таблиц"""
+        """Инициализация базы данных с созданием таблиц и выполнением миграций"""
         async with aiosqlite.connect(self.db_path) as db:
             # Таблица промо-кодов
             await db.execute('''
@@ -47,12 +47,11 @@ class Database:
                 )
             ''')
             
-            # Таблица связей сообщений с кодами - ВАЖНАЯ для обновления сообщений
+            # Таблица связей сообщений с кодами (базовая версия)
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS code_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code_id INTEGER NOT NULL,
-                    code_value TEXT NOT NULL,  -- Добавляем значение кода для быстрого поиска
                     user_id INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -60,8 +59,45 @@ class Database:
                 )
             ''')
             
+            # МИГРАЦИЯ: Добавляем колонку code_value если её нет
+            await self._add_code_value_column(db)
+            
             await db.commit()
-            logger.info("База данных инициализирована")
+            logger.info("База данных инициализирована с выполненными миграциями")
+    
+    async def _add_code_value_column(self, db):
+        """Миграция: добавление колонки code_value в таблицу code_messages"""
+        try:
+            # Проверяем, существует ли колонка code_value
+            cursor = await db.execute("PRAGMA table_info(code_messages)")
+            columns = await cursor.fetchall()
+            column_names = [column[1] for column in columns]
+            
+            if 'code_value' not in column_names:
+                logger.info("🔄 Выполняю миграцию: добавление колонки code_value")
+                
+                # Добавляем новую колонку
+                await db.execute('ALTER TABLE code_messages ADD COLUMN code_value TEXT')
+                
+                # Заполняем существующие записи значениями кодов
+                await db.execute('''
+                    UPDATE code_messages 
+                    SET code_value = (
+                        SELECT codes.code 
+                        FROM codes 
+                        WHERE codes.id = code_messages.code_id
+                    )
+                    WHERE code_value IS NULL
+                ''')
+                
+                await db.commit()
+                logger.info("✅ Миграция выполнена: колонка code_value добавлена и заполнена")
+            else:
+                logger.debug("Колонка code_value уже существует")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при выполнении миграции: {e}")
+            # Не прерываем инициализацию из-за ошибки миграции
 
     async def add_code(self, code: CodeModel) -> Optional[int]:
         """Добавление нового промо-кода. Возвращает ID кода"""
@@ -198,8 +234,17 @@ class Database:
                     
                     code_id = row[0]
                 
-                # Удаляем все связанные сообщения с кодом
-                await db.execute("DELETE FROM code_messages WHERE code_id = ? OR code_value = ?", (code_id, code))
+                # Удаляем все связанные сообщения с кодом (с обработкой отсутствия code_value)
+                try:
+                    # Пробуем удалить по code_value (новая схема)
+                    await db.execute("DELETE FROM code_messages WHERE code_value = ?", (code,))
+                except aiosqlite.OperationalError:
+                    # Если колонка code_value не существует, удаляем по code_id (старая схема)
+                    logger.info("Удаляем сообщения по старой схеме (code_id)")
+                    await db.execute("DELETE FROM code_messages WHERE code_id = ?", (code_id,))
+                
+                # Также удаляем по code_id для полной очистки
+                await db.execute("DELETE FROM code_messages WHERE code_id = ?", (code_id,))
                 
                 # Удаляем сам код
                 cursor = await db.execute("DELETE FROM codes WHERE code = ?", (code,))
@@ -269,11 +314,11 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             # Общее количество пользователей
             async with db.execute("SELECT COUNT(*) FROM users") as cursor:
-                total_users = await cursor.fetchone()[0]
+                total_users = (await cursor.fetchone())[0]
             
             # Количество подписчиков
             async with db.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = 1") as cursor:
-                subscribers_count = await cursor.fetchone()[0]
+                subscribers_count = (await cursor.fetchone())[0]
             
             # Последние 5 пользователей
             async with db.execute('''
@@ -320,10 +365,10 @@ class Database:
             logger.error(f"Ошибка отписки: {e}")
             return False
     
-    # НОВЫЕ ФУНКЦИИ для работы с сообщениями кодов
+    # ФУНКЦИИ для работы с сообщениями кодов с обработкой миграций
     
     async def save_code_message(self, code_id: int, user_id: int, message_id: int, code_value: str = None) -> bool:
-        """Сохранение связи между кодом и отправленным сообщением"""
+        """Сохранение связи между кодом и отправленным сообщением с поддержкой миграции"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 # Если code_value не передан, получаем его из базы
@@ -336,10 +381,23 @@ class Database:
                             logger.warning(f"Код с ID {code_id} не найден")
                             return False
                 
-                await db.execute('''
-                    INSERT INTO code_messages (code_id, code_value, user_id, message_id, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (code_id, code_value, user_id, message_id, datetime.utcnow().isoformat()))
+                # Пробуем вставить с code_value
+                try:
+                    await db.execute('''
+                        INSERT INTO code_messages (code_id, code_value, user_id, message_id, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (code_id, code_value, user_id, message_id, datetime.utcnow().isoformat()))
+                
+                except aiosqlite.OperationalError as e:
+                    if "no such column: code_value" in str(e):
+                        # Колонка code_value не существует - используем старый формат
+                        logger.debug("Используем старую схему для сохранения сообщения")
+                        await db.execute('''
+                            INSERT INTO code_messages (code_id, user_id, message_id, created_at)
+                            VALUES (?, ?, ?, ?)
+                        ''', (code_id, user_id, message_id, datetime.utcnow().isoformat()))
+                    else:
+                        raise
                 
                 await db.commit()
                 logger.debug(f"Сохранена связь: код_id={code_id}, user_id={user_id}, message_id={message_id}")
@@ -349,44 +407,42 @@ class Database:
             logger.error(f"Ошибка сохранения связи сообщения: {e}")
             return False
     
-    async def get_code_messages(self, code_id: int) -> List[CodeMessageModel]:
-        """Получение всех сообщений для кода по ID"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute('''
-                SELECT id, code_id, user_id, message_id, created_at 
-                FROM code_messages 
-                WHERE code_id = ?
-            ''', (code_id,)) as cursor:
-                rows = await cursor.fetchall()
-                
-                return [CodeMessageModel(
-                    id=row[0],
-                    code_id=row[1], 
-                    user_id=row[2],
-                    message_id=row[3],
-                    created_at=datetime.fromisoformat(row[4]) if row[4] else None
-                ) for row in rows]
-    
     async def get_code_messages_by_value(self, code_value: str) -> List[CodeMessageModel]:
-        """КЛЮЧЕВАЯ ФУНКЦИЯ: Получение всех сообщений для кода по его значению"""
+        """Получение всех сообщений для кода по его значению с обработкой миграции"""
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute('''
-                SELECT id, code_id, user_id, message_id, created_at 
-                FROM code_messages 
-                WHERE code_value = ?
-            ''', (code_value,)) as cursor:
-                rows = await cursor.fetchall()
-                
-                messages = [CodeMessageModel(
-                    id=row[0],
-                    code_id=row[1], 
-                    user_id=row[2],
-                    message_id=row[3],
-                    created_at=datetime.fromisoformat(row[4]) if row[4] else None
-                ) for row in rows]
-                
-                logger.info(f"Найдено {len(messages)} сообщений для кода {code_value}")
-                return messages
+            try:
+                # Пробуем использовать новую схему с code_value
+                async with db.execute('''
+                    SELECT id, code_id, user_id, message_id, created_at 
+                    FROM code_messages 
+                    WHERE code_value = ?
+                ''', (code_value,)) as cursor:
+                    rows = await cursor.fetchall()
+                    
+            except aiosqlite.OperationalError as e:
+                if "no such column: code_value" in str(e):
+                    # Используем старую схему через JOIN
+                    logger.debug("Используем старую схему для поиска сообщений")
+                    async with db.execute('''
+                        SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at 
+                        FROM code_messages cm
+                        JOIN codes c ON c.id = cm.code_id
+                        WHERE c.code = ?
+                    ''', (code_value,)) as cursor:
+                        rows = await cursor.fetchall()
+                else:
+                    raise
+            
+            messages = [CodeMessageModel(
+                id=row[0],
+                code_id=row[1], 
+                user_id=row[2],
+                message_id=row[3],
+                created_at=datetime.fromisoformat(row[4]) if row[4] else None
+            ) for row in rows]
+            
+            logger.info(f"Найдено {len(messages)} сообщений для кода {code_value}")
+            return messages
     
     async def reset_database(self) -> bool:
         """Сброс базы данных (удаление кодов и сообщений, сохранение пользователей)"""
@@ -417,16 +473,16 @@ class Database:
                 
                 # Количество пользователей
                 async with db.execute("SELECT COUNT(*) FROM users") as cursor:
-                    stats['users'] = await cursor.fetchone()[0]
+                    stats['users'] = (await cursor.fetchone())[0]
                 
                 # Общее количество кодов
                 async with db.execute("SELECT COUNT(*) FROM codes") as cursor:
-                    stats['codes_total'] = await cursor.fetchone()[0]
+                    stats['codes_total'] = (await cursor.fetchone())[0]
                     stats['codes_active'] = stats['codes_total']  # Все коды активные
                 
                 # Количество записей сообщений
                 async with db.execute("SELECT COUNT(*) FROM code_messages") as cursor:
-                    stats['messages'] = await cursor.fetchone()[0]
+                    stats['messages'] = (await cursor.fetchone())[0]
                 
                 # Размер файла БД
                 if os.path.exists(self.db_path):
