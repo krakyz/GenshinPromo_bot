@@ -1,4 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from typing import List
+from models import CodeModel
 
 def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineKeyboardMarkup:
     """Создает клавиатуру с кнопкой активации кода и дополнительными опциями"""
@@ -25,6 +27,29 @@ def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineK
     # Стандартные кнопки навигации
     inline_keyboard.append([
         InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
+        InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+
+def get_all_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
+    """Создает клавиатуру со всеми кодами для активации"""
+    inline_keyboard = []
+    
+    # Добавляем кнопки для каждого кода (по 1 в ряду для лучшей читаемости)
+    for code in codes:
+        if code.is_active:
+            activation_url = f"https://genshin.hoyoverse.com/gift?code={code.code}"
+            inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🎁 {code.code}",
+                    url=activation_url
+                )
+            ])
+    
+    # Добавляем стандартные кнопки навигации
+    inline_keyboard.append([
+        InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe"),
         InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
     ])
     
@@ -107,6 +132,10 @@ def get_custom_post_with_button_keyboard(button_text: str, button_url: str) -> I
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=button_text, url=button_url)
+        ],
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
+            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
         ]
     ])
     
