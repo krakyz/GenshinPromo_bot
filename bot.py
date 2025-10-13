@@ -8,8 +8,8 @@ from config import BOT_TOKEN
 from database import db
 
 # Импортируем роутеры напрямую из файлов
-from handlers_user import router as user_router
-from handlers_admin import router as admin_router
+from handlers import router as user_router
+from handlers import router as admin_router
 
 # Настройка логирования
 logging.basicConfig(
