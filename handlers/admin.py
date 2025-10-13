@@ -106,6 +106,312 @@ async def admin_panel(message: Message):
         reply_markup=get_admin_keyboard()
     )
 
+@router.callback_query(lambda c: c.data == "admin_add_code", AdminFilter())
+async def add_code_callback(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс добавления кода"""
+    await callback.message.edit_text(
+        "➕ <b>Добавление нового промо-кода</b>\n\n"
+        "Отправь данные о промо-коде в следующем формате:\n\n"
+        "<code>КОД\n"
+        "Описание кода\n"
+        "Награды\n"
+        "Дата истечения (необязательно)</code>\n\n"
+        "<b>Пример без даты истечения:</b>\n"
+        "<code>GENSHINGIFT\n"
+        "Стандартный промо-код\n"
+        "50 Примогемов + 3 Книги героя</code>\n\n"
+        "<b>Пример с датой истечения:</b>\n"
+        "<code>LIMITEDCODE\n"
+        "Ограниченный промо-код\n"
+        "100 Примогемов + 5 Книг героя\n"
+        "15.10.2025 23:59</code>\n\n"
+        "Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ или ДД.ММ.ГГГГ\n\n"
+        "Или отправь /cancel для отмены",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_code_data)
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_code_data, AdminFilter())
+async def process_new_code(message: Message, state: FSMContext, bot: Bot):
+    """Обработка нового кода от админа"""
+    if message.text == "/cancel":
+        await message.answer("❌ Добавление кода отменено")
+        await state.clear()
+        return
+    
+    try:
+        lines = message.text.strip().split('\n')
+        if len(lines) < 3:
+            await message.answer(
+                "❌ <b>Неверный формат!</b>\n\n"
+                "Нужно минимум 3 строки:\n"
+                "1. Код\n"
+                "2. Описание\n"
+                "3. Награды\n"
+                "4. Дата истечения (необязательно)",
+                parse_mode="HTML"
+            )
+            return
+        
+        code = lines[0].strip().upper()
+        description = lines[1].strip()
+        rewards = lines[2].strip()
+        expires_date = None
+        
+        # Проверяем, указана ли дата истечения
+        if len(lines) > 3:
+            expires_date = parse_expiry_date(lines[3])
+            if lines[3].strip() and not expires_date:
+                await message.answer(
+                    "❌ <b>Неверный формат даты!</b>\n\n"
+                    "Используй формат:\n"
+                    "• <code>15.10.2025 23:59</code> (с временем)\n"
+                    "• <code>15.10.2025</code> (без времени, истечет в 23:59 МСК)",
+                    parse_mode="HTML"
+                )
+                return
+        
+        # Создаем объект кода
+        new_code = CodeModel(
+            code=code,
+            description=description,
+            rewards=rewards,
+            expires_date=expires_date
+        )
+        
+        # Добавляем в базу данных
+        code_id = await db.add_code(new_code)
+        
+        if code_id:
+            # Формируем сообщение подтверждения
+            confirmation_text = (
+                f"✅ <b>Код успешно добавлен!</b>\n\n"
+                f"🔥 <b>Код:</b> <code>{code}</code>\n"
+                f"📝 <b>Описание:</b> {description}\n"
+                f"💎 <b>Награды:</b> {rewards}"
+            )
+            
+            if expires_date:
+                confirmation_text += f"\n⏰ <b>Истекает:</b> {format_expiry_date(expires_date)}"
+            
+            await message.answer(confirmation_text, parse_mode="HTML")
+            
+            # Обновляем объект с ID для рассылки
+            new_code.id = code_id
+            
+            # Отправляем уведомление всем подписчикам
+            await broadcast_new_code(bot, new_code)
+            
+        else:
+            await message.answer(
+                f"❌ <b>Ошибка!</b>\n\n"
+                f"Код <code>{code}</code> уже существует в базе данных.",
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении кода: {e}")
+        await message.answer(
+            "❌ <b>Произошла ошибка при добавлении кода</b>\n\n"
+            "Проверь формат и попробуй еще раз.",
+            parse_mode="HTML"
+        )
+    
+    await state.clear()
+
+@router.callback_query(lambda c: c.data == "admin_expire_code", AdminFilter())
+async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс деактивации кода"""
+    codes = await db.get_active_codes()
+    
+    if not codes:
+        await callback.message.edit_text(
+            "🤷‍♂️ <b>Нет активных кодов для деактивации</b>",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard()
+        )
+        await callback.answer()
+        return
+    
+    codes_list = "\n".join([f"• <code>{code.code}</code>" for code in codes])
+    
+    await callback.message.edit_text(
+        f"❌ <b>Деактивация промо-кода</b>\n\n"
+        f"<b>Активные коды:</b>\n{codes_list}\n\n"
+        f"Отправь код, который нужно деактивировать, или /cancel для отмены:",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_code_to_expire)
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_code_to_expire, AdminFilter())
+async def process_expire_code(message: Message, state: FSMContext, bot: Bot):
+    """Обработка деактивации кода"""
+    if message.text == "/cancel":
+        await message.answer("❌ Деактивация кода отменена")
+        await state.clear()
+        return
+    
+    code = message.text.strip().upper()
+    success = await db.expire_code(code)
+    
+    if success:
+        await message.answer(
+            f"✅ <b>Код удален!</b>\n\n"
+            f"Код <code>{code}</code> полностью удален из базы данных.\n\n"
+            f"🔄 <b>Обновляю сообщения пользователей...</b>",
+            parse_mode="HTML"
+        )
+        
+        # Обновляем старые сообщения вместо отправки новых
+        await update_expired_code_messages(bot, code)
+    else:
+        await message.answer(
+            f"❌ <b>Ошибка!</b>\n\n"
+            f"Активный код <code>{code}</code> не найден.",
+            parse_mode="HTML"
+        )
+    
+    await state.clear()
+
+@router.callback_query(lambda c: c.data == "admin_custom_post", AdminFilter())
+async def custom_post_callback(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс создания кастомного поста"""
+    await callback.message.edit_text(
+        "📢 <b>Создание рекламного поста</b>\n\n"
+        "Отправь данные для поста в следующем формате:\n\n"
+        "<code>Заголовок\n"
+        "Текст поста\n"
+        "Текст кнопки (необязательно)\n"
+        "Ссылка кнопки (необязательно)</code>\n\n"
+        "<b>Пример без кнопки:</b>\n"
+        "<code>🎮 Новость!\n"
+        "Обновление 4.2 уже в игре!</code>\n\n"
+        "<b>Пример с кнопкой:</b>\n"
+        "<code>🛒 Магазин\n"
+        "Скидки на примогемы!\n"
+        "Купить сейчас\n"
+        "https://example.com</code>\n\n"
+        "Или отправь /cancel для отмены",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_custom_post_data)
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_custom_post_data, AdminFilter())
+async def process_custom_post_data(message: Message, state: FSMContext):
+    """Обработка данных кастомного поста"""
+    if message.text == "/cancel":
+        await message.answer("❌ Создание поста отменено")
+        await state.clear()
+        return
+    
+    try:
+        lines = message.text.strip().split('\n')
+        if len(lines) < 2:
+            await message.answer(
+                "❌ <b>Неверный формат!</b>\n\n"
+                "Нужно минимум 2 строки:\n"
+                "1. Заголовок\n"
+                "2. Текст поста",
+                parse_mode="HTML"
+            )
+            return
+        
+        title = lines[0].strip()
+        text = lines[1].strip()
+        button_text = lines[2].strip() if len(lines) > 2 else None
+        button_url = lines[3].strip() if len(lines) > 3 else None
+        
+        # Проверяем, что если указан текст кнопки, то указана и ссылка
+        if button_text and not button_url:
+            await message.answer(
+                "❌ <b>Ошибка!</b>\n\n"
+                "Если указан текст кнопки, необходимо также указать ссылку.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Сохраняем данные в контексте
+        await state.update_data({
+            'title': title,
+            'text': text,
+            'button_text': button_text,
+            'button_url': button_url
+        })
+        
+        await message.answer(
+            "📸 <b>Отлично!</b>\n\n"
+            "Теперь отправь изображение для поста или отправь /skip чтобы создать пост без изображения.\n\n"
+            "Или отправь /cancel для отмены.",
+            parse_mode="HTML"
+        )
+        
+        await state.set_state(AdminStates.waiting_for_custom_post_image)
+    
+    except Exception as e:
+        logger.error(f"Ошибка при обработке данных поста: {e}")
+        await message.answer(
+            "❌ <b>Произошла ошибка при обработке данных</b>\n\n"
+            "Проверь формат и попробуй еще раз.",
+            parse_mode="HTML"
+        )
+
+@router.message(AdminStates.waiting_for_custom_post_image, AdminFilter())
+async def process_custom_post_image(message: Message, state: FSMContext, bot: Bot):
+    """Обработка изображения для кастомного поста и немедленная отправка"""
+    if message.text == "/cancel":
+        await message.answer("❌ Создание поста отменено")
+        await state.clear()
+        return
+    
+    data = await state.get_data()
+    image_file_id = None
+    
+    # Проверяем, отправил ли пользователь изображение или команду skip
+    if message.photo:
+        # Получаем изображение наивысшего качества
+        photo: PhotoSize = message.photo[-1]
+        image_file_id = photo.file_id
+        logger.info(f"Получено изображение для поста: {image_file_id}")
+    elif message.text == "/skip":
+        logger.info("Пост создается без изображения")
+    else:
+        await message.answer(
+            "❌ <b>Неверный формат!</b>\n\n"
+            "Отправь изображение или /skip для пропуска.",
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        await message.answer(
+            f"✅ <b>Пост готов к отправке!</b>\n\n"
+            f"📢 <b>Заголовок:</b> {data['title']}\n"
+            f"📝 <b>Текст:</b> {data['text']}\n"
+            f"📸 <b>Изображение:</b> {'Да' if image_file_id else 'Нет'}\n"
+            f"🔗 <b>Кнопка:</b> {data.get('button_text') if data.get('button_text') else 'Нет'}\n\n"
+            "🚀 <b>Начинаю рассылку...</b>",
+            parse_mode="HTML"
+        )
+        
+        # Отправляем рассылку немедленно без сохранения в БД
+        await broadcast_custom_post(bot, data, image_file_id, message.from_user.id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при создании поста: {e}")
+        await message.answer(
+            "❌ <b>Произошла ошибка при создании поста</b>\n\n"
+            "Попробуй еще раз.",
+            parse_mode="HTML"
+        )
+    
+    await state.clear()
+
 @router.callback_query(lambda c: c.data == "admin_stats", AdminFilter())
 async def admin_stats_callback(callback: CallbackQuery):
     """Показать статистику бота"""
@@ -397,10 +703,21 @@ async def cancel_admin_action(message: Message, state: FSMContext):
         reply_markup=get_admin_keyboard()
     )
 
-# Placeholder функции (добавить полные реализации из других файлов)
+# Функции для рассылки (заглушки - нужно добавить полные реализации)
 async def broadcast_new_code(bot: Bot, code: CodeModel):
-    """Placeholder - добавить полную реализацию"""
-    pass
+    """Рассылка нового кода всем подписчикам"""
+    logger.info(f"Начинаю рассылку нового кода: {code.code}")
+    # TODO: Добавить полную реализацию рассылки
+
+async def broadcast_custom_post(bot: Bot, post_data: dict, image_file_id: str, admin_id: int):
+    """Рассылка кастомного поста всем подписчикам"""
+    logger.info(f"Начинаю рассылку поста: {post_data['title']}")
+    # TODO: Добавить полную реализацию рассылки
+
+async def update_expired_code_messages(bot: Bot, code: str):
+    """Обновление старых сообщений при истечении кода"""
+    logger.info(f"Обновляю сообщения для истекшего кода: {code}")
+    # TODO: Добавить полную реализацию обновления сообщений
 
 @router.callback_query(lambda c: c.data == "expired_code")
 async def expired_code_callback(callback: CallbackQuery):
