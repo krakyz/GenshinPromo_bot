@@ -1,26 +1,32 @@
 """
-Оптимизированные модели данных с расширенной функциональностью
+Оптимизированные модели данных с обратной совместимостью
 """
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-import json
 
 
 @dataclass
 class UserModel:
     """Модель пользователя с дополнительными свойствами"""
     user_id: int
+    id: Optional[int] = None
     username: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     language_code: Optional[str] = 'ru'
     is_subscribed: bool = True
-    joined_at: Optional[datetime] = field(default_factory=datetime.now)
-    last_activity: Optional[datetime] = field(default_factory=datetime.now)
+    joined_at: Optional[datetime] = None
+    last_activity: Optional[datetime] = None
     
     def __post_init__(self):
         """Постобработка после инициализации"""
+        # Устанавливаем время по умолчанию
+        if self.joined_at is None:
+            self.joined_at = datetime.now()
+        if self.last_activity is None:
+            self.last_activity = datetime.now()
+            
         # Обрезаем длинные имена
         if self.first_name and len(self.first_name) > 64:
             self.first_name = self.first_name[:64]
@@ -49,38 +55,31 @@ class UserModel:
             parts.append(self.last_name)
         
         return " ".join(parts) if parts else self.display_name
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Преобразует модель в словарь"""
-        return {
-            'user_id': self.user_id,
-            'username': self.username,
-            'first_name': self.first_name,
-            'last_name': self.last_name,
-            'language_code': self.language_code,
-            'is_subscribed': self.is_subscribed,
-            'joined_at': self.joined_at.isoformat() if self.joined_at else None,
-            'last_activity': self.last_activity.isoformat() if self.last_activity else None
-        }
 
 
 @dataclass
 class CodeModel:
     """Модель промо-кода с расширенными возможностями"""
-    code: str
-    description: Optional[str] = None
-    rewards: Optional[str] = None
-    expires_date: Optional[datetime] = None
-    created_at: Optional[datetime] = field(default_factory=datetime.now)
-    is_active: bool = True
+    code: str = ""
+    description: str = ""
+    rewards: str = ""
     id: Optional[int] = None
+    expires_date: Optional[datetime] = None  # Планируемая дата истечения
+    created_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None  # Фактическая дата истечения
+    is_active: bool = True
     usage_count: int = 0
     max_uses: Optional[int] = None
     
     def __post_init__(self):
         """Постобработка после инициализации"""
+        # Устанавливаем время создания
+        if self.created_at is None:
+            self.created_at = datetime.now()
+            
         # Приводим код к верхнему регистру
-        self.code = self.code.upper().strip()
+        if self.code:
+            self.code = self.code.upper().strip()
         
         # Обрезаем длинные строки
         if self.description and len(self.description) > 500:
@@ -88,12 +87,9 @@ class CodeModel:
         if self.rewards and len(self.rewards) > 500:
             self.rewards = self.rewards[:500]
         
-        # Валидация кода
-        if not self.code or len(self.code) < 3:
-            raise ValueError("Код должен содержать минимум 3 символа")
-        
-        if len(self.code) > 20:
-            raise ValueError("Код не может быть длиннее 20 символов")
+        # Базовая валидация кода
+        if self.code and (len(self.code) < 3 or len(self.code) > 20):
+            raise ValueError(f"Неверная длина кода: {self.code}")
     
     @property
     def is_expired(self) -> bool:
@@ -101,17 +97,12 @@ class CodeModel:
         if not self.expires_date:
             return False
         
-        from utils.date_utils import DateTimeUtils
-        return DateTimeUtils.is_code_expired(self.expires_date)
-    
-    @property
-    def time_left(self):
-        """Возвращает оставшееся время до истечения"""
-        if not self.expires_date:
-            return None
-        
-        from utils.date_utils import DateTimeUtils
-        return DateTimeUtils.time_until_expiry(self.expires_date)
+        try:
+            from utils.date_utils import DateTimeUtils
+            return DateTimeUtils.is_code_expired(self.expires_date)
+        except ImportError:
+            # Fallback для обратной совместимости
+            return datetime.now() >= self.expires_date
     
     @property
     def formatted_expiry(self) -> str:
@@ -119,78 +110,40 @@ class CodeModel:
         if not self.expires_date:
             return "Не указано"
         
-        from utils.date_utils import DateTimeUtils
-        return DateTimeUtils.format_expiry_date(self.expires_date)
+        try:
+            from utils.date_utils import DateTimeUtils
+            return DateTimeUtils.format_expiry_date(self.expires_date)
+        except ImportError:
+            # Fallback для обратной совместимости
+            return self.expires_date.strftime('%d.%m.%Y %H:%M МСК')
     
     @property
     def activation_url(self) -> str:
         """Возвращает URL для активации кода"""
         return f"https://genshin.hoyoverse.com/gift?code={self.code}"
-    
-    def is_usage_limited(self) -> bool:
-        """Проверяет, ограничено ли использование кода"""
-        return self.max_uses is not None and self.usage_count >= self.max_uses
-    
-    def can_be_used(self) -> bool:
-        """Проверяет, можно ли использовать код"""
-        return (
-            self.is_active and
-            not self.is_expired and
-            not self.is_usage_limited()
-        )
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Преобразует модель в словарь"""
-        return {
-            'id': self.id,
-            'code': self.code,
-            'description': self.description,
-            'rewards': self.rewards,
-            'expires_date': self.expires_date.isoformat() if self.expires_date else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'is_active': self.is_active,
-            'usage_count': self.usage_count,
-            'max_uses': self.max_uses,
-            'is_expired': self.is_expired,
-            'activation_url': self.activation_url
-        }
-    
-    def to_user_text(self) -> str:
-        """Возвращает текст для отображения пользователю"""
-        text = f"🔥 **{self.code}**\n"
-        
-        if self.description:
-            text += f"📝 {self.description}\n"
-        
-        if self.rewards:
-            text += f"💎 {self.rewards}\n"
-        
-        if self.expires_date:
-            text += f"⏰ До: {self.formatted_expiry}\n"
-        
-        return text
 
 
-@dataclass
-class MessageModel:
-    """Модель сообщения с кодом"""
+@dataclass 
+class CodeMessageModel:
+    """Модель для отслеживания отправленных сообщений с кодами (обратная совместимость)"""
+    code_id: int = 0
+    user_id: int = 0
+    message_id: int = 0
     id: Optional[int] = None
-    code_id: int = None
-    user_id: int = None
-    message_id: int = None
-    created_at: Optional[datetime] = field(default_factory=datetime.now)
+    created_at: Optional[datetime] = None
     is_active: bool = True
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Преобразует модель в словарь"""
-        return {
-            'id': self.id,
-            'code_id': self.code_id,
-            'user_id': self.user_id,
-            'message_id': self.message_id,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'is_active': self.is_active
-        }
+    def __post_init__(self):
+        """Постобработка после инициализации"""
+        if self.created_at is None:
+            self.created_at = datetime.now()
+
+
+# Новая модель (алиас для совместимости)
+@dataclass
+class MessageModel(CodeMessageModel):
+    """Улучшенная модель сообщения (наследует CodeMessageModel для совместимости)"""
+    pass
 
 
 @dataclass
@@ -220,19 +173,6 @@ class BroadcastStats:
     def finish(self):
         """Завершает подсчет времени рассылки"""
         self.end_time = datetime.now()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Преобразует статистику в словарь"""
-        return {
-            'total_users': self.total_users,
-            'sent_count': self.sent_count,
-            'failed_count': self.failed_count,
-            'blocked_count': self.blocked_count,
-            'success_rate': self.success_rate,
-            'duration': self.duration,
-            'start_time': self.start_time.isoformat() if self.start_time else None,
-            'end_time': self.end_time.isoformat() if self.end_time else None
-        }
     
     def to_report_text(self) -> str:
         """Генерирует текст отчета"""
