@@ -66,7 +66,7 @@ def get_subscription_keyboard(is_subscribed: bool = False) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для админа"""
+    """Создает главную клавиатуру для админа"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="➕ Добавить код", callback_data="admin_add_code"),
@@ -82,6 +82,45 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🗄️ База данных", callback_data="admin_database")
+        ]
+    ])
+    
+    return keyboard
+
+def get_admin_stats_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы статистики"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_stats")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    
+    return keyboard
+
+def get_admin_codes_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы активных кодов"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_active_codes")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    
+    return keyboard
+
+def get_admin_users_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы пользователей"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_users")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
         ]
     ])
     

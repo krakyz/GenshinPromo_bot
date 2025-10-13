@@ -11,7 +11,8 @@ from filters.admin_filter import AdminFilter
 from keyboards.inline import (
     get_admin_keyboard, get_code_activation_keyboard, 
     get_database_admin_keyboard, get_custom_post_keyboard,
-    get_custom_post_with_button_keyboard
+    get_custom_post_with_button_keyboard, get_admin_stats_keyboard,
+    get_admin_codes_keyboard, get_admin_users_keyboard
 )
 from utils.date_utils import parse_expiry_date, format_expiry_date
 from datetime import datetime
@@ -31,7 +32,7 @@ class AdminStates(StatesGroup):
     waiting_for_code_to_expire = State()
     waiting_for_custom_post_data = State()
     waiting_for_custom_post_image = State()
-    waiting_for_db_reset_confirmation = State()  # Новое состояние для подтверждения сброса
+    waiting_for_db_reset_confirmation = State()
 
 @router.message(Command("admin"), AdminFilter())
 async def admin_panel(message: Message):
@@ -59,120 +60,130 @@ async def admin_panel(message: Message):
         reply_markup=get_admin_keyboard()
     )
 
-@router.callback_query(lambda c: c.data == "admin_add_code", AdminFilter())
-async def add_code_callback(callback: CallbackQuery, state: FSMContext):
-    """Начать процесс добавления кода"""
-    await callback.message.edit_text(
-        "➕ <b>Добавление нового промо-кода</b>\n\n"
-        "Отправь данные о промо-коде в следующем формате:\n\n"
-        "<code>КОД\n"
-        "Описание кода\n"
-        "Награды\n"
-        "Дата истечения (необязательно)</code>\n\n"
-        "<b>Пример без даты истечения:</b>\n"
-        "<code>GENSHINGIFT\n"
-        "Стандартный промо-код\n"
-        "50 Примогемов + 3 Книги героя</code>\n\n"
-        "<b>Пример с датой истечения:</b>\n"
-        "<code>LIMITEDCODE\n"
-        "Ограниченный промо-код\n"
-        "100 Примогемов + 5 Книг героя\n"
-        "15.10.2025 23:59</code>\n\n"
-        "Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ или ДД.ММ.ГГГГ\n\n"
-        "Или отправь /cancel для отмены",
-        parse_mode="HTML"
-    )
-    
-    await state.set_state(AdminStates.waiting_for_code_data)
-    await callback.answer()
-
-@router.message(AdminStates.waiting_for_code_data, AdminFilter())
-async def process_new_code(message: Message, state: FSMContext, bot: Bot):
-    """Обработка нового кода от админа"""
-    if message.text == "/cancel":
-        await message.answer("❌ Добавление кода отменено")
-        await state.clear()
-        return
-    
+@router.callback_query(lambda c: c.data == "admin_stats", AdminFilter())
+async def admin_stats_callback(callback: CallbackQuery):
+    """Показать статистику бота"""
     try:
-        lines = message.text.strip().split('\n')
-        if len(lines) < 3:
-            await message.answer(
-                "❌ <b>Неверный формат!</b>\n\n"
-                "Нужно минимум 3 строки:\n"
-                "1. Код\n"
-                "2. Описание\n"
-                "3. Награды\n"
-                "4. Дата истечения (необязательно)",
-                parse_mode="HTML"
-            )
-            return
+        active_codes = await db.get_active_codes()
+        active_count = len(active_codes)
         
-        code = lines[0].strip().upper()
-        description = lines[1].strip()
-        rewards = lines[2].strip()
-        expires_date = None
+        total_users, subscribers_count, _ = await db.get_user_stats()
         
-        # Проверяем, указана ли дата истечения
-        if len(lines) > 3:
-            expires_date = parse_expiry_date(lines[3])
-            if lines[3].strip() and not expires_date:
-                await message.answer(
-                    "❌ <b>Неверный формат даты!</b>\n\n"
-                    "Используй формат:\n"
-                    "• <code>15.10.2025 23:59</code> (с временем)\n"
-                    "• <code>15.10.2025</code> (без времени, истечет в 23:59 МСК)",
-                    parse_mode="HTML"
-                )
-                return
+        stats_text = f"""
+📊 <b>Статистика бота</b>
+
+🎁 <b>Активные промо-коды:</b> {active_count}
+👥 <b>Всего пользователей:</b> {total_users}
+🔔 <b>Подписчики:</b> {subscribers_count}
+📅 <b>Обновлено:</b> {datetime.now().strftime('%d.%m.%Y %H:%M МСК')}
+
+<b>Активные коды:</b>
+"""
         
-        # Создаем объект кода
-        new_code = CodeModel(
-            code=code,
-            description=description,
-            rewards=rewards,
-            expires_date=expires_date
-        )
-        
-        # Добавляем в базу данных
-        code_id = await db.add_code(new_code)
-        
-        if code_id:
-            # Формируем сообщение подтверждения
-            confirmation_text = (
-                f"✅ <b>Код успешно добавлен!</b>\n\n"
-                f"🔥 <b>Код:</b> <code>{code}</code>\n"
-                f"📝 <b>Описание:</b> {description}\n"
-                f"💎 <b>Награды:</b> {rewards}"
-            )
-            
-            if expires_date:
-                confirmation_text += f"\n⏰ <b>Истекает:</b> {format_expiry_date(expires_date)}"
-            
-            await message.answer(confirmation_text, parse_mode="HTML")
-            
-            # Обновляем объект с ID для рассылки
-            new_code.id = code_id
-            
-            # Отправляем уведомление всем подписчикам
-            await broadcast_new_code(bot, new_code)
-            
+        if active_codes:
+            for code in active_codes:
+                created = code.created_at.strftime('%d.%m') if code.created_at else 'N/A'
+                expires = format_expiry_date(code.expires_date) if code.expires_date else 'Не указано'
+                stats_text += f"• <code>{code.code}</code> (добавлен {created}, истекает {expires})\n"
         else:
-            await message.answer(
-                f"❌ <b>Ошибка!</b>\n\n"
-                f"Код <code>{code}</code> уже существует в базе данных.",
-                parse_mode="HTML"
-            )
+            stats_text += "Нет активных кодов\n"
+        
+        await callback.message.edit_text(
+            stats_text,
+            parse_mode="HTML",
+            reply_markup=get_admin_stats_keyboard()
+        )
     
     except Exception as e:
-        logger.error(f"Ошибка при добавлении кода: {e}")
-        await message.answer(
-            "❌ <b>Произошла ошибка при добавлении кода</b>\n\n"
-            "Проверь формат и попробуй еще раз.",
-            parse_mode="HTML"
+        logger.error(f"Ошибка при получении статистики: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при получении статистики",
+            reply_markup=get_admin_stats_keyboard()
         )
     
-    await state.clear()
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "admin_active_codes", AdminFilter())
+async def admin_active_codes_callback(callback: CallbackQuery):
+    """Показать все активные коды"""
+    codes = await db.get_active_codes()
+    
+    if not codes:
+        await callback.message.edit_text(
+            "🤷‍♂️ <b>Активных промо-кодов пока нет</b>\n\n"
+            "Добавь новый код через главное меню админки.",
+            parse_mode="HTML",
+            reply_markup=get_admin_codes_keyboard()
+        )
+        await callback.answer()
+        return
+    
+    codes_text = f"📋 <b>Активные промо-коды ({len(codes)}):</b>\n\n"
+    
+    for code in codes:
+        created = code.created_at.strftime('%d.%m.%Y %H:%M МСК') if code.created_at else 'N/A'
+        expires = format_expiry_date(code.expires_date) if code.expires_date else 'Не указано'
+        codes_text += f"""
+🔥 <b>{code.code}</b>
+📝 {code.description}
+💎 {code.rewards}
+⏰ Добавлен: {created}
+⌛ Истекает: {expires}
+━━━━━━━━━━━━━━━━━━━
+"""
+    
+    await callback.message.edit_text(
+        codes_text,
+        parse_mode="HTML",
+        reply_markup=get_admin_codes_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "admin_users", AdminFilter())
+async def admin_users_callback(callback: CallbackQuery):
+    """Показать информацию о пользователях"""
+    try:
+        total_users, subscribers_count, recent_users = await db.get_user_stats()
+        
+        users_text = f"""
+👥 <b>Информация о пользователях</b>
+
+📈 <b>Общая статистика:</b>
+• Всего пользователей: {total_users}
+• Подписчиков: {subscribers_count}
+• Отписавшихся: {total_users - subscribers_count}
+• Процент подписок: {round(subscribers_count/total_users*100, 1) if total_users > 0 else 0}%
+
+👤 <b>Последние 5 пользователей:</b>
+"""
+        
+        if recent_users:
+            for user in recent_users:
+                name = user['first_name'] or 'Без имени'
+                username = f"@{user['username']}" if user['username'] else 'Нет username'
+                status = "🔔" if user['is_subscribed'] else "🔕"
+                joined = user['joined_at'].strftime('%d.%m.%Y') if user['joined_at'] else 'N/A'
+                
+                users_text += f"\n{status} <b>{name}</b> ({username})\n"
+                users_text += f"   ID: <code>{user['user_id']}</code>\n"
+                users_text += f"   Присоединился: {joined}\n"
+        else:
+            users_text += "\nПользователи не найдены"
+        
+        await callback.message.edit_text(
+            users_text,
+            parse_mode="HTML",
+            reply_markup=get_admin_users_keyboard()
+        )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о пользователях: {e}")
+        await callback.message.edit_text(
+            "❌ Ошибка при получении информации о пользователях",
+            reply_markup=get_admin_users_keyboard()
+        )
+    
+    await callback.answer()
 
 @router.callback_query(lambda c: c.data == "admin_database", AdminFilter())
 async def admin_database_callback(callback: CallbackQuery):
@@ -360,51 +371,7 @@ async def cancel_admin_action(message: Message, state: FSMContext):
         reply_markup=get_admin_keyboard()
     )
 
-# Остальные обработчики админки (сокращенные для экономии места)
-@router.callback_query(lambda c: c.data == "admin_stats", AdminFilter())
-async def admin_stats_callback(callback: CallbackQuery):
-    """Показать статистику бота"""
-    try:
-        active_codes = await db.get_active_codes()
-        active_count = len(active_codes)
-        
-        total_users, subscribers_count, _ = await db.get_user_stats()
-        
-        stats_text = f"""
-📊 <b>Статистика бота</b>
-
-🎁 <b>Активные промо-коды:</b> {active_count}
-👥 <b>Всего пользователей:</b> {total_users}
-🔔 <b>Подписчики:</b> {subscribers_count}
-📅 <b>Дата обновления:</b> {datetime.now().strftime('%d.%m.%Y %H:%M МСК')}
-
-<b>Активные коды:</b>
-"""
-        
-        if active_codes:
-            for code in active_codes:
-                created = code.created_at.strftime('%d.%m') if code.created_at else 'N/A'
-                expires = format_expiry_date(code.expires_date) if code.expires_date else 'Не указано'
-                stats_text += f"• <code>{code.code}</code> (добавлен {created}, истекает {expires})\n"
-        else:
-            stats_text += "Нет активных кодов\n"
-        
-        await callback.message.edit_text(
-            stats_text,
-            parse_mode="HTML",
-            reply_markup=get_admin_keyboard()
-        )
-    
-    except Exception as e:
-        logger.error(f"Ошибка при получении статистики: {e}")
-        await callback.message.edit_text(
-            "❌ Ошибка при получении статистики",
-            reply_markup=get_admin_keyboard()
-        )
-    
-    await callback.answer()
-
-# Placeholder функции для совместимости (нужно добавить полные реализации)
+# Placeholder функции (добавить полные реализации из других файлов)
 async def broadcast_new_code(bot: Bot, code: CodeModel):
     """Placeholder - добавить полную реализацию"""
     pass
