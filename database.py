@@ -318,152 +318,39 @@ class Database:
             return False
     
     async def save_code_message(self, code_id: int, user_id: int, message_id: int) -> bool:
-        """Сохраняет связь между кодом и отправленным сообщением"""
+        """Сохранить связь между кодом и отправленным сообщением"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                await db.execute(
-                    """INSERT INTO code_messages (code_id, user_id, message_id, created_at) 
-                    VALUES (?, ?, ?, ?)""",
-                    (code_id, user_id, message_id, datetime.now().isoformat())
-                )
+                await db.execute('''
+                    INSERT INTO code_messages (code_id, user_id, message_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (code_id, user_id, message_id, datetime.utcnow().isoformat()))
                 await db.commit()
                 logger.debug(f"Сохранена связь: код {code_id}, пользователь {user_id}, сообщение {message_id}")
                 return True
         except Exception as e:
-            logger.error(f"Ошибка сохранения связи сообщения: {e}")
+            logger.error(f"Ошибка при сохранении связи сообщения: {e}")
             return False
     
-    async def get_code_messages_by_value(self, code_value: str) -> List[CodeMessageModel]:
-        """Получает все сообщения связанные с определенным кодом ПО ЕГО ЗНАЧЕНИЮ"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute("""
-                    SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at 
-                    FROM code_messages cm
-                    JOIN codes c ON cm.code_id = c.id
-                    WHERE c.code = ? AND cm.is_active = 1
-                """, (code_value,))
-                
+    async def get_code_messages(self, code_id: int) -> List[CodeMessageModel]:
+        """Получить все сообщения связанные с конкретным кодом"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute('''
+                SELECT id, code_id, user_id, message_id, created_at
+                FROM code_messages
+                WHERE code_id = ?
+            ''', (code_id,)) as cursor:
                 rows = await cursor.fetchall()
-                messages = []
-                
-                for row in rows:
-                    message = CodeMessageModel(
-                        id=row['id'],
-                        code_id=row['code_id'],
-                        user_id=row['user_id'], 
-                        message_id=row['message_id'],
-                        created_at=datetime.fromisoformat(row['created_at'])
+                return [
+                    CodeMessageModel(
+                        id=row[0],
+                        code_id=row[1],
+                        user_id=row[2],
+                        message_id=row[3],
+                        created_at=datetime.fromisoformat(row[4]) if row[4] else None
                     )
-                    messages.append(message)
-                
-                logger.info(f"Найдено {len(messages)} сообщений для кода {code_value}")
-                return messages
-                
-        except Exception as e:
-            logger.error(f"Ошибка получения сообщений для кода {code_value}: {e}")
-            return []
-    
-    async def get_code_messages_by_id(self, code_id: int) -> List[CodeMessageModel]:
-        """Получает все сообщения связанные с определенным кодом ПО ЕГО ID"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute("""
-                    SELECT id, code_id, user_id, message_id, created_at 
-                    FROM code_messages 
-                    WHERE code_id = ? AND is_active = 1
-                """, (code_id,))
-                
-                rows = await cursor.fetchall()
-                messages = []
-                
-                for row in rows:
-                    message = CodeMessageModel(
-                        id=row['id'],
-                        code_id=row['code_id'],
-                        user_id=row['user_id'],
-                        message_id=row['message_id'],
-                        created_at=datetime.fromisoformat(row['created_at'])
-                    )
-                    messages.append(message)
-                
-                return messages
-                
-        except Exception as e:
-            logger.error(f"Ошибка получения сообщений для кода ID {code_id}: {e}")
-            return []
-
-
-    async def delete_code_messages_by_value(self, code_value: str) -> bool:
-        """Удаляет записи сообщений для определенного кода (опционально)"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    UPDATE code_messages 
-                    SET is_active = 0 
-                    WHERE code_id IN (SELECT id FROM codes WHERE code = ?)
-                """, (code_value,))
-                await db.commit()
-                return True
-                
-        except Exception as e:
-            logger.error(f"Ошибка удаления записей сообщений для кода {code_value}: {e}")
-            return False
-        
-    async def create_tables(self):
-        """Создание всех необходимых таблиц"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Существующие таблицы...
-                
-                # Добавить эту таблицу:
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS code_messages (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        code_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        message_id INTEGER NOT NULL,
-                        created_at TEXT NOT NULL,
-                        is_active INTEGER DEFAULT 1,
-                        FOREIGN KEY (code_id) REFERENCES codes (id),
-                        INDEX idx_code_id (code_id),
-                        INDEX idx_user_id (user_id),
-                        INDEX idx_is_active (is_active)
-                    )
-                """)
-                
-                await db.commit()
-                logger.info("Таблица code_messages создана или уже существует")
-                
-        except Exception as e:
-            logger.error(f"Ошибка создания таблиц: {e}")
-            raise
-
-
-    async def cleanup_old_messages(self, days_old: int = 30) -> int:
-        """Очищает старые записи сообщений (старше указанного количества дней)"""
-        try:
-            from datetime import datetime, timedelta
-            cutoff_date = datetime.now() - timedelta(days=days_old)
-            
-            async with aiosqlite.connect(self.db_path) as db:
-                cursor = await db.execute("""
-                    UPDATE code_messages 
-                    SET is_active = 0 
-                    WHERE created_at < ? AND is_active = 1
-                """, (cutoff_date.isoformat(),))
-                
-                cleaned_count = cursor.rowcount
-                await db.commit()
-                
-                logger.info(f"Очищено {cleaned_count} старых записей сообщений")
-                return cleaned_count
-                
-        except Exception as e:
-            logger.error(f"Ошибка очистки старых сообщений: {e}")
-            return 0
+                    for row in rows
+                ]
     
     async def reset_database(self) -> bool:
         """Сброс базы данных (удаление всех данных кроме пользователей)"""

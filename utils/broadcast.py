@@ -1,5 +1,5 @@
 """
-Исправленная система рассылки с сохранением связей сообщений и их обновлением
+Оптимизированная система рассылки с функцией обновления истекших сообщений
 """
 import asyncio
 import logging
@@ -8,15 +8,89 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
 from database import db
-from models import CodeModel, CodeMessageModel
+from models import CodeModel
 from keyboards.inline import get_code_activation_keyboard, get_custom_post_keyboard, get_custom_post_with_button_keyboard
 from utils.date_utils import format_expiry_date
 
 logger = logging.getLogger(__name__)
 
 
+class BroadcastManager:
+    """Управляет рассылкой сообщений с оптимизацией"""
+    
+    def __init__(self, bot: Bot, max_concurrent: int = 10, delay: float = 0.05):
+        self.bot = bot
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.delay = delay
+        self.stats = {"sent": 0, "failed": 0, "blocked": 0}
+    
+    async def send_message_safe(
+        self,
+        user_id: int,
+        text: str = None,
+        photo: str = None,
+        reply_markup=None,
+        parse_mode: str = "HTML"
+    ) -> bool:
+        """Безопасная отправка сообщения одному пользователю"""
+        async with self.semaphore:
+            try:
+                if photo:
+                    message = await self.bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode
+                    )
+                else:
+                    message = await self.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode
+                    )
+                
+                self.stats["sent"] += 1
+                await asyncio.sleep(self.delay)
+                return message.message_id  # Возвращаем ID сообщения
+                
+            except TelegramForbiddenError:
+                self.stats["blocked"] += 1
+                logger.debug(f"Пользователь {user_id} заблокировал бота")
+                return False
+                
+            except TelegramRetryAfter as e:
+                logger.warning(f"Флуд-лимит: ждем {e.retry_after} секунд")
+                await asyncio.sleep(e.retry_after)
+                return await self.send_message_safe(user_id, text, photo, reply_markup, parse_mode)
+                
+            except Exception as e:
+                self.stats["failed"] += 1
+                logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+                return False
+    
+    async def broadcast_to_users(
+        self,
+        user_ids: List[int],
+        text: str = None,
+        photo: str = None,
+        reply_markup=None
+    ) -> Dict[str, int]:
+        """Рассылка сообщений списку пользователей"""
+        self.stats = {"sent": 0, "failed": 0, "blocked": 0}
+        
+        tasks = [
+            self.send_message_safe(user_id, text, photo, reply_markup)
+            for user_id in user_ids
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return self.stats.copy(), results
+
+
 class MessageTemplates:
-    """Шаблоны сообщений для рассылки"""
+    """Шаблоны сообщений для различных типов рассылки"""
     
     @staticmethod
     def new_code_message(code: CodeModel) -> str:
@@ -63,9 +137,7 @@ class MessageTemplates:
 
 
 async def broadcast_new_code(bot: Bot, code: CodeModel) -> Dict[str, int]:
-    """
-    ИСПРАВЛЕННАЯ рассылка нового кода с сохранением связей сообщений
-    """
+    """Оптимизированная рассылка нового кода с сохранением ID сообщений"""
     logger.info(f"Начинаю рассылку нового кода: {code.code}")
     
     # Получаем подписчиков
@@ -78,65 +150,33 @@ async def broadcast_new_code(bot: Bot, code: CodeModel) -> Dict[str, int]:
     text = MessageTemplates.new_code_message(code)
     keyboard = get_code_activation_keyboard(code.code)
     
-    # Статистика рассылки
-    stats = {"sent": 0, "failed": 0, "blocked": 0}
+    # Выполняем рассылку
+    broadcast_manager = BroadcastManager(bot)
+    stats, results = await broadcast_manager.broadcast_to_users(
+        user_ids=subscribers,
+        text=text,
+        reply_markup=keyboard
+    )
     
-    # Рассылаем сообщения с сохранением связей
-    for user_id in subscribers:
-        try:
-            message = await bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
-            
-            # КРИТИЧНО: Сохраняем связь сообщения с кодом
-            await db.save_code_message(
-                code_id=code.id,
-                user_id=user_id,
-                message_id=message.message_id
-            )
-            
-            stats["sent"] += 1
-            await asyncio.sleep(0.05)  # Защита от флуд-лимита
-            
-        except TelegramForbiddenError:
-            stats["blocked"] += 1
-            logger.debug(f"Пользователь {user_id} заблокировал бота")
-            
-        except TelegramRetryAfter as e:
-            logger.warning(f"Флуд-лимит: ждем {e.retry_after} секунд")
-            await asyncio.sleep(e.retry_after)
-            # Повторяем попытку
+    # Сохраняем связи сообщений с кодом для будущих обновлений
+    for i, (user_id, result) in enumerate(zip(subscribers, results)):
+        if result and isinstance(result, int):  # result это message_id
             try:
-                message = await bot.send_message(
-                    chat_id=user_id,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-                await db.save_code_message(
-                    code_id=code.id,
-                    user_id=user_id,
-                    message_id=message.message_id
-                )
-                stats["sent"] += 1
-            except:
-                stats["failed"] += 1
-                
-        except Exception as e:
-            stats["failed"] += 1
-            logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+                await db.save_code_message(code.id, user_id, result)
+            except Exception as e:
+                logger.error(f"Ошибка сохранения связи сообщения: {e}")
     
     logger.info(f"Рассылка кода завершена: {stats}")
     return stats
 
 
-async def broadcast_custom_post(bot: Bot, post_data: Dict[str, Any], image_file_id: Optional[str], admin_id: int) -> Dict[str, int]:
-    """
-    Рассылка кастомного поста
-    """
+async def broadcast_custom_post(
+    bot: Bot,
+    post_data: Dict[str, Any],
+    image_file_id: Optional[str],
+    admin_id: int
+) -> Dict[str, int]:
+    """Оптимизированная рассылка кастомного поста"""
     logger.info(f"Начинаю рассылку поста: {post_data['title']}")
     
     # Получаем подписчиков
@@ -156,62 +196,14 @@ async def broadcast_custom_post(bot: Bot, post_data: Dict[str, Any], image_file_
     else:
         keyboard = get_custom_post_keyboard()
     
-    # Статистика рассылки
-    stats = {"sent": 0, "failed": 0, "blocked": 0}
-    
-    # Рассылаем сообщения
-    for user_id in subscribers:
-        try:
-            if image_file_id:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=image_file_id,
-                    caption=text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-            else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-            
-            stats["sent"] += 1
-            await asyncio.sleep(0.05)
-            
-        except TelegramForbiddenError:
-            stats["blocked"] += 1
-            logger.debug(f"Пользователь {user_id} заблокировал бота")
-            
-        except TelegramRetryAfter as e:
-            logger.warning(f"Флуд-лимит: ждем {e.retry_after} секунд")
-            await asyncio.sleep(e.retry_after)
-            # Повторяем попытку
-            try:
-                if image_file_id:
-                    await bot.send_photo(
-                        chat_id=user_id,
-                        photo=image_file_id,
-                        caption=text,
-                        reply_markup=keyboard,
-                        parse_mode="HTML"
-                    )
-                else:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=text,
-                        reply_markup=keyboard,
-                        parse_mode="HTML"
-                    )
-                stats["sent"] += 1
-            except:
-                stats["failed"] += 1
-                
-        except Exception as e:
-            stats["failed"] += 1
-            logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+    # Выполняем рассылку
+    broadcast_manager = BroadcastManager(bot)
+    stats, _ = await broadcast_manager.broadcast_to_users(
+        user_ids=subscribers,
+        text=text,
+        photo=image_file_id,
+        reply_markup=keyboard
+    )
     
     # Отправляем отчет админу
     report_text = MessageTemplates.broadcast_report(stats, len(subscribers))
@@ -225,29 +217,26 @@ async def broadcast_custom_post(bot: Bot, post_data: Dict[str, Any], image_file_
 
 
 async def update_expired_code_messages(bot: Bot, code_value: str):
-    """
-    ИСПРАВЛЕННАЯ функция обновления сообщений при истечении кода
-    """
+    """Обновляет старые сообщения при истечении кода"""
     logger.info(f"Обновляю сообщения для истекшего кода: {code_value}")
     
     try:
-        # КРИТИЧНО: Получаем все сообщения связанные с этим кодом ПЕРЕД его удалением
+        # Получаем все сообщения связанные с этим кодом ПЕРЕД его удалением
         messages = await db.get_code_messages_by_value(code_value)
         
         if not messages:
             logger.info(f"Сообщения для кода {code_value} не найдены")
             return
         
-        logger.info(f"Найдено {len(messages)} сообщений для обновления")
-        
         # Подготавливаем новые данные
         expired_text = MessageTemplates.expired_code_message(code_value)
         expired_keyboard = get_code_activation_keyboard(code_value, is_expired=True)
         
-        # Обновляем сообщения
+        # Создаем менеджер для безопасного обновления
         updated_count = 0
         failed_count = 0
         
+        # Обновляем сообщения
         for msg in messages:
             try:
                 await bot.edit_message_text(
@@ -258,23 +247,17 @@ async def update_expired_code_messages(bot: Bot, code_value: str):
                     parse_mode="HTML"
                 )
                 updated_count += 1
-                await asyncio.sleep(0.05)  # Небольшая пауза между обновлениями
+                await asyncio.sleep(0.1)  # Более медленная обработка для edit операций
                 
-            except (TelegramBadRequest, TelegramForbiddenError) as e:
+            except (TelegramBadRequest, TelegramForbiddenError):
                 # Сообщение удалено пользователем или бот заблокирован
                 failed_count += 1
-                logger.debug(f"Не удалось обновить сообщение {msg.id}: {e}")
                 continue
-                
             except Exception as e:
                 logger.error(f"Ошибка обновления сообщения {msg.id}: {e}")
                 failed_count += 1
         
         logger.info(f"Обновление сообщений для кода {code_value} завершено: обновлено {updated_count}, ошибок {failed_count}")
         
-        # Удаляем записи о сообщениях (опционально, можно оставить для истории)
-        # await db.delete_code_messages_by_value(code_value)
-        
     except Exception as e:
         logger.error(f"Критическая ошибка при обновлении сообщений: {e}")
-        raise  # Пробрасываем ошибку выше для обработки

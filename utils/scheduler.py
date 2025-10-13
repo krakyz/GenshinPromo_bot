@@ -1,14 +1,14 @@
 """
-Исправленный планировщик с правильным вызовом обновления сообщений
+Оптимизированный планировщик задач с улучшенной обработкой ошибок
 """
 import asyncio
 import logging
-from datetime import datetime
 from typing import Optional
 from aiogram import Bot
 
 from database import db
 from utils.date_utils import get_moscow_time
+from utils.broadcast import update_expired_code_messages
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,8 @@ class SchedulerService:
     
     async def check_expired_codes(self) -> int:
         """
-        Проверяет и обрабатывает истекшие коды с обновлением сообщений
+        Проверяет и обрабатывает истекшие коды
+        Возвращает количество обработанных кодов
         """
         try:
             moscow_now = get_moscow_time()
@@ -44,8 +45,8 @@ class SchedulerService:
                 try:
                     logger.info(f"⏰ Обрабатываю истекший код: {code.code}")
                     
-                    # КРИТИЧНО: Обновляем сообщения ПЕРЕД удалением кода
-                    await self.update_expired_code_messages(code.code)
+                    # Обновляем сообщения пользователей ПЕРЕД удалением
+                    await update_expired_code_messages(self.bot, code.code)
                     
                     # Удаляем код из БД
                     success = await db.expire_code_by_id(code.id)
@@ -72,18 +73,6 @@ class SchedulerService:
             logger.error(f"💥 Критическая ошибка при проверке истекших кодов: {e}")
             return 0
     
-    async def update_expired_code_messages(self, code_value: str):
-        """
-        Обновляет сообщения для истекшего кода (интегрированная версия)
-        """
-        try:
-            # Импортируем здесь чтобы избежать циклических импортов
-            from utils.broadcast import update_expired_code_messages
-            await update_expired_code_messages(self.bot, code_value)
-            
-        except Exception as e:
-            logger.error(f"Ошибка обновления сообщений для кода {code_value}: {e}")
-    
     async def run_scheduler_cycle(self):
         """Один цикл планировщика"""
         try:
@@ -93,8 +82,9 @@ class SchedulerService:
             # Проверяем истекшие коды
             await self.check_expired_codes()
             
-            # Дополнительные задачи можно добавить здесь
+            # Здесь можно добавить другие периодические задачи
             # await self.cleanup_old_messages()
+            # await self.send_daily_stats()
             
         except Exception as e:
             logger.error(f"❌ Ошибка в цикле планировщика: {e}")
@@ -143,7 +133,7 @@ async def check_expired_codes(bot: Bot):
 
 async def start_scheduler(bot: Bot):
     """
-    ИСПРАВЛЕННЫЙ запуск планировщика задач
+    Запускает планировщик задач
     """
     scheduler = SchedulerService(bot, check_interval=300)  # 5 минут
     
@@ -153,6 +143,29 @@ async def start_scheduler(bot: Bot):
         logger.error(f"💥 Критическая ошибка планировщика: {e}")
     finally:
         scheduler.stop()
+
+
+# Дополнительные планировщики для будущих задач
+class MaintenanceScheduler:
+    """Планировщик задач обслуживания"""
+    
+    def __init__(self, bot: Bot):
+        self.bot = bot
+    
+    async def cleanup_old_messages(self):
+        """Очистка старых сообщений (будущая функция)"""
+        logger.info("🧹 Очистка старых сообщений...")
+        # TODO: Реализовать очистку старых записей code_messages
+        
+    async def send_daily_stats(self):
+        """Отправка дневной статистики админу (будущая функция)"""
+        logger.info("📊 Отправка дневной статистики...")
+        # TODO: Реализовать отправку статистики
+    
+    async def backup_database(self):
+        """Создание резервной копии БД (будущая функция)"""
+        logger.info("💾 Создание резервной копии БД...")
+        # TODO: Реализовать бэкап БД
 
 
 # Утилитарные функции для отладки
