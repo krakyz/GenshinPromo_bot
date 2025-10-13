@@ -141,7 +141,6 @@ class Database:
     async def get_codes_to_expire(self) -> List[CodeModel]:
         """Получить коды, которые должны истечь (по московскому времени)"""
         moscow_now = get_moscow_time()
-        moscow_now_utc = moscow_now.astimezone(datetime.now().astimezone().tzinfo.replace('UTC'))
         
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute('''
@@ -277,20 +276,6 @@ class Database:
                     })
             
             return total_users, subscribers_count, recent_users
-    
-    async def unsubscribe_user(self, user_id: int) -> bool:
-        """Отписать пользователя от рассылки"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute('''
-                    UPDATE users SET is_subscribed = 0 WHERE user_id = ?
-                ''', (user_id,))
-                await db.commit()
-                logger.info(f"Пользователь {user_id} отписался от рассылки")
-                return True
-        except Exception as e:
-            logger.error(f"Ошибка при отписке пользователя: {e}")
-            return False
     
     async def subscribe_user(self, user_id: int) -> bool:
         """Подписать пользователя на рассылку"""

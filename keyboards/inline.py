@@ -3,7 +3,7 @@ from typing import List
 from models import CodeModel
 
 def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с кнопкой активации кода и дополнительными опциями"""
+    """Создает клавиатуру с кнопкой активации кода и кнопкой просмотра всех кодов"""
     inline_keyboard = []
     
     if not is_expired:
@@ -24,10 +24,9 @@ def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineK
             )
         ])
     
-    # Стандартные кнопки навигации
+    # Кнопка просмотра всех кодов
     inline_keyboard.append([
-        InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
-        InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
     ])
     
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
@@ -47,27 +46,24 @@ def get_all_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
                 )
             ])
     
-    # Добавляем стандартные кнопки навигации
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+
+def get_subscription_keyboard(is_subscribed: bool = False) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для управления подпиской (динамическую)"""
+    inline_keyboard = []
+    
+    # Показываем кнопку подписки только если пользователь не подписан
+    if not is_subscribed:
+        inline_keyboard.append([
+            InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe")
+        ])
+    
+    # Кнопка просмотра кодов всегда доступна
     inline_keyboard.append([
-        InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe"),
-        InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+        InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
     ])
     
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-
-def get_subscription_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для управления подпиской"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe"),
-            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
-        ],
-        [
-            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
-        ]
-    ])
-    
-    return keyboard
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру для админа"""
@@ -92,11 +88,10 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     return keyboard
 
 def get_codes_navigation_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для навигации после просмотра кодов"""
+    """Создает минимальную клавиатуру для навигации (только просмотр кодов)"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe"),
-            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
         ]
     ])
     
@@ -117,11 +112,10 @@ def get_database_admin_keyboard() -> InlineKeyboardMarkup:
     return keyboard
 
 def get_custom_post_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для кастомного поста"""
+    """Создает клавиатуру для кастомного поста (только просмотр кодов)"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
-            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
         ]
     ])
     
@@ -134,8 +128,7 @@ def get_custom_post_with_button_keyboard(button_text: str, button_url: str) -> I
             InlineKeyboardButton(text=button_text, url=button_url)
         ],
         [
-            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
-            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
         ]
     ])
     

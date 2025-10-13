@@ -5,12 +5,22 @@ from aiogram.fsm.context import FSMContext
 
 from database import db
 from models import UserModel
-from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_all_codes_keyboard
+from keyboards.inline import get_subscription_keyboard, get_all_codes_keyboard
 from utils.date_utils import format_expiry_date
 import logging
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+async def get_user_subscription_status(user_id: int) -> bool:
+    """Получить статус подписки пользователя"""
+    try:
+        # Проверяем статус подписки в базе данных
+        subscribers = await db.get_all_subscribers()
+        return user_id in subscribers
+    except Exception as e:
+        logger.error(f"Ошибка при проверке статуса подписки: {e}")
+        return False
 
 @router.message(CommandStart())
 async def start_handler(message: Message):
@@ -23,6 +33,9 @@ async def start_handler(message: Message):
     
     await db.add_user(user)
     
+    # Проверяем статус подписки
+    is_subscribed = await get_user_subscription_status(message.from_user.id)
+    
     welcome_text = f"""
 🎮 <b>Добро пожаловать в бот промо-кодов Genshin Impact!</b>
 
@@ -33,12 +46,10 @@ async def start_handler(message: Message):
 🔔 <b>Что я умею:</b>
 • Отправляю уведомления о новых промо-кодах
 • Показываю активные коды с кнопками для активации
-• Помогаю управлять подпиской на уведомления
+• Помогаю найти самые свежие промо-коды
 
 📱 <b>Доступные команды:</b>
 /codes - показать все активные коды
-/subscribe - подписаться на уведомления
-/unsubscribe - отписаться от уведомлений
 /help - показать справку
 
 ⏰ <i>Все сроки указаны в московском времени (МСК)</i>
@@ -46,10 +57,13 @@ async def start_handler(message: Message):
 Удачи в путешествии по Тейвату! ✨
 """
     
+    if is_subscribed:
+        welcome_text += "\n✅ <i>Ты уже подписан на уведомления о новых кодах!</i>"
+    
     await message.answer(
         welcome_text,
         parse_mode="HTML",
-        reply_markup=get_subscription_keyboard()
+        reply_markup=get_subscription_keyboard(is_subscribed)
     )
 
 @router.message(Command("codes"))
@@ -63,17 +77,27 @@ async def codes_handler(update):
     if isinstance(update, Message):
         message = update
         edit_message = False
+        user_id = message.from_user.id
     else:  # CallbackQuery
         message = update.message
         edit_message = True
+        user_id = update.from_user.id
         await update.answer()
     
     if not codes:
+        # Проверяем статус подписки для показа правильной клавиатуры
+        is_subscribed = await get_user_subscription_status(user_id)
+        
         text = (
             "🤷‍♂️ <b>Активных промо-кодов пока нет</b>\n\n"
-            "Подпишись на уведомления, чтобы узнать о новых кодах первым!"
         )
-        keyboard = get_subscription_keyboard()
+        
+        if not is_subscribed:
+            text += "Подпишись на уведомления, чтобы узнать о новых кодах первым!"
+        else:
+            text += "Как только появятся новые коды, ты получишь уведомление!"
+        
+        keyboard = get_subscription_keyboard(is_subscribed)
         
         if edit_message:
             await message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -116,14 +140,15 @@ async def codes_handler(update):
 @router.message(Command("help"))
 async def help_handler(message: Message):
     """Обработчик команды /help"""
+    # Проверяем статус подписки
+    is_subscribed = await get_user_subscription_status(message.from_user.id)
+    
     help_text = """
 📚 <b>Справка по боту Genshin Impact промо-кодов</b>
 
 🤖 <b>Основные команды:</b>
-/start - запустить бота и подписаться
+/start - запустить бота
 /codes - показать все активные промо-коды
-/subscribe - подписаться на уведомления о новых кодах
-/unsubscribe - отписаться от уведомлений
 /help - показать эту справку
 
 🎁 <b>Как активировать промо-код:</b>
@@ -138,17 +163,19 @@ async def help_handler(message: Message):
 • Коды имеют ограниченное время действия
 • Для активации нужен Adventure Rank 10+
 • ⏰ Все сроки указаны в московском времени (МСК)
-
-📢 <b>Уведомления:</b>
-Подпишись, чтобы получать мгновенные уведомления о новых промо-кодах!
-
-🎮 Удачи в Genshin Impact!
 """
+    
+    if not is_subscribed:
+        help_text += "\n📢 <b>Уведомления:</b>\nПодпишись, чтобы получать мгновенные уведомления о новых промо-кодах!"
+    else:
+        help_text += "\n✅ <b>Ты подписан на уведомления!</b>\nТы будешь получать все новые промо-коды автоматически."
+    
+    help_text += "\n\n🎮 Удачи в Genshin Impact!"
     
     await message.answer(
         help_text,
         parse_mode="HTML",
-        reply_markup=get_subscription_keyboard()
+        reply_markup=get_subscription_keyboard(is_subscribed)
     )
 
 @router.callback_query(lambda c: c.data == "subscribe")
@@ -161,73 +188,59 @@ async def subscribe_callback(callback: CallbackQuery):
             "🔔 <b>Отлично!</b>\n\n"
             "Ты подписался на уведомления о новых промо-кодах Genshin Impact!\n"
             "Теперь ты будешь получать уведомления о каждом новом коде.\n\n"
-            "⏰ <i>Все сроки указаны в московском времени (МСК)</i>",
+            "⏰ <i>Все сроки указаны в московском времени (МСК)</i>\n\n"
+            "✨ <i>Используй кнопку ниже, чтобы посмотреть все доступные коды!</i>",
             parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
+            reply_markup=get_subscription_keyboard(is_subscribed=True)  # Теперь подписан
         )
     else:
         await callback.message.edit_text(
             "❌ <b>Ошибка</b>\n\n"
             "Не удалось подписаться на уведомления. Попробуй позже.",
             parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
+            reply_markup=get_subscription_keyboard(is_subscribed=False)
         )
     
-    await callback.answer()
+    await callback.answer("Подписка оформлена! 🎉")
 
-@router.callback_query(lambda c: c.data == "unsubscribe")
-async def unsubscribe_callback(callback: CallbackQuery):
-    """Обработчик отписки от уведомлений"""
-    success = await db.unsubscribe_user(callback.from_user.id)
-    
-    if success:
-        await callback.message.edit_text(
-            "🔕 <b>Готово!</b>\n\n"
-            "Ты отписался от уведомлений о промо-кодах.\n"
-            "Ты все еще можешь просматривать активные коды командой /codes",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
-        )
-    else:
-        await callback.message.edit_text(
-            "❌ <b>Ошибка</b>\n\n"
-            "Не удалось отписаться от уведомлений. Попробуй позже.",
-            parse_mode="HTML",
-            reply_markup=get_subscription_keyboard()
-        )
-    
-    await callback.answer()
+# Убираем все обработчики отписки - больше не нужны
 
 @router.message(Command("subscribe"))
 async def subscribe_command(message: Message):
     """Команда подписки"""
+    # Проверяем, не подписан ли уже
+    is_subscribed = await get_user_subscription_status(message.from_user.id)
+    
+    if is_subscribed:
+        await message.answer(
+            "✅ <b>Ты уже подписан!</b>\n\n"
+            "Ты получаешь уведомления о всех новых промо-кодах Genshin Impact.",
+            parse_mode="HTML",
+            reply_markup=get_subscription_keyboard(is_subscribed=True)
+        )
+        return
+    
     success = await db.subscribe_user(message.from_user.id)
     
     if success:
         await message.answer(
             "🔔 <b>Отлично!</b>\n\n"
             "Ты подписался на уведомления о новых промо-кодах Genshin Impact!",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=get_subscription_keyboard(is_subscribed=True)
         )
     else:
         await message.answer(
             "❌ Не удалось подписаться на уведомления. Попробуй позже.",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=get_subscription_keyboard(is_subscribed=False)
         )
 
-@router.message(Command("unsubscribe"))
-async def unsubscribe_command(message: Message):
-    """Команда отписки"""
-    success = await db.unsubscribe_user(message.from_user.id)
-    
-    if success:
-        await message.answer(
-            "🔕 <b>Готово!</b>\n\n"
-            "Ты отписался от уведомлений о промо-кодах.",
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(
-            "❌ Не удалось отписаться от уведомлений. Попробуй позже.",
-            parse_mode="HTML"
-        )
+# Callback для истекших кодов
+@router.callback_query(lambda c: c.data == "expired_code")
+async def expired_code_callback(callback: CallbackQuery):
+    """Обработчик нажатий на истекшие коды"""
+    await callback.answer(
+        "⌛ Этот промо-код больше не действует. Следи за новыми кодами!",
+        show_alert=True
+    )
