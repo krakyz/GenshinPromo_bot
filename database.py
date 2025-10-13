@@ -393,6 +393,160 @@ class Database:
         except Exception as e:
             logger.error(f"Ошибка при получении статистики БД: {e}")
             return {}
+    # ИСПРАВЛЕНИЯ ДЛЯ database.py
+# Добавить эти методы в класс Database
+
+"""
+ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ БАЗЫ ДАННЫХ
+Для системы обновления сообщений при истечении кодов
+"""
+
+async def get_code_messages_by_value(self, code_value: str) -> List[CodeMessageModel]:
+    """
+    КЛЮЧЕВОЙ МЕТОД: Получает все сообщения связанные с кодом ПО ЕГО ЗНАЧЕНИЮ
+    Критично для обновления сообщений при деактивации кода
+    """
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute('''
+                SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at
+                FROM code_messages cm
+                JOIN codes c ON cm.code_id = c.id
+                WHERE c.code = ? AND c.is_active = 1
+            ''', (code_value,)) as cursor:
+                rows = await cursor.fetchall()
+                
+                messages = []
+                for row in rows:
+                    message = CodeMessageModel(
+                        id=row[0],
+                        code_id=row[1],
+                        user_id=row[2],
+                        message_id=row[3],
+                        created_at=datetime.fromisoformat(row[4]) if row[4] else None
+                    )
+                    messages.append(message)
+                
+                logger.debug(f"Найдено сообщений для кода {code_value}: {len(messages)}")
+                return messages
+                
+    except Exception as e:
+        logger.error(f"Ошибка получения сообщений для кода {code_value}: {e}")
+        return []
+
+async def cleanup_expired_code_messages(self, code_value: str) -> bool:
+    """
+    Очищает записи сообщений для истекшего кода
+    """
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            # Удаляем записи сообщений для истекшего кода
+            await db.execute('''
+                DELETE FROM code_messages 
+                WHERE code_id IN (
+                    SELECT id FROM codes WHERE code = ?
+                )
+            ''', (code_value,))
+            
+            await db.commit()
+            
+            # Получаем количество удаленных записей
+            cursor = await db.execute("SELECT changes()")
+            changes = await cursor.fetchone()
+            
+            deleted_count = changes[0] if changes else 0
+            logger.info(f"Очищено записей сообщений для кода {code_value}: {deleted_count}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Ошибка очистки сообщений для кода {code_value}: {e}")
+        return False
+
+async def update_table_structure(self):
+    """
+    Обновляет структуру таблицы code_messages если необходимо
+    """
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            # Проверяем существующую структуру таблицы
+            async with db.execute("PRAGMA table_info(code_messages)") as cursor:
+                columns = await cursor.fetchall()
+                column_names = [col[1] for col in columns]
+            
+            # Если таблица не существует, создаем её
+            if not columns:
+                await db.execute('''
+                    CREATE TABLE code_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        code_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        message_id INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (code_id) REFERENCES codes (id)
+                    )
+                ''')
+                logger.info("Создана таблица code_messages")
+            
+            # Создаем индексы для оптимизации
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_code_id ON code_messages (code_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_user_id ON code_messages (user_id)")
+            
+            await db.commit()
+            logger.info("Структура таблицы code_messages обновлена")
+            
+    except Exception as e:
+        logger.error(f"Ошибка обновления структуры таблицы: {e}")
+
+# ИСПРАВЛЕНИЕ МЕТОДА ИНИЦИАЛИЗАЦИИ
+async def init_db(self):
+    """Инициализация базы данных с обновленной структурой"""
+    async with aiosqlite.connect(self.db_path) as db:
+        # Таблица для промо-кодов
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                description TEXT,
+                rewards TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expired_at TIMESTAMP,
+                expires_date TIMESTAMP
+            )
+        ''')
+        
+        # Таблица для пользователей
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                is_subscribed BOOLEAN DEFAULT 1,
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # ОБНОВЛЕННАЯ таблица для отслеживания сообщений с кодами
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS code_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (code_id) REFERENCES codes (id)
+            )
+        ''')
+        
+        # Создаем индексы для оптимизации
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_code_id ON code_messages (code_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_user_id ON code_messages (user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_codes_active ON codes (is_active)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_codes_expires ON codes (expires_date)")
+        
+        await db.commit()
+        logger.info("База данных инициализирована с обновленной структурой")
 
 # Создаем глобальный экземпляр базы данных
 db = Database()
