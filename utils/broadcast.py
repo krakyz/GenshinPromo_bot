@@ -1,5 +1,5 @@
 """
-Оптимизированная система рассылки сообщений с батчевой обработкой
+Оптимизированная система рассылки с функцией обновления истекших сообщений
 """
 import asyncio
 import logging
@@ -36,7 +36,7 @@ class BroadcastManager:
         async with self.semaphore:
             try:
                 if photo:
-                    await self.bot.send_photo(
+                    message = await self.bot.send_photo(
                         chat_id=user_id,
                         photo=photo,
                         caption=text,
@@ -44,7 +44,7 @@ class BroadcastManager:
                         parse_mode=parse_mode
                     )
                 else:
-                    await self.bot.send_message(
+                    message = await self.bot.send_message(
                         chat_id=user_id,
                         text=text,
                         reply_markup=reply_markup,
@@ -53,7 +53,7 @@ class BroadcastManager:
                 
                 self.stats["sent"] += 1
                 await asyncio.sleep(self.delay)
-                return True
+                return message.message_id  # Возвращаем ID сообщения
                 
             except TelegramForbiddenError:
                 self.stats["blocked"] += 1
@@ -85,8 +85,8 @@ class BroadcastManager:
             for user_id in user_ids
         ]
         
-        await asyncio.gather(*tasks, return_exceptions=True)
-        return self.stats.copy()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return self.stats.copy(), results
 
 
 class MessageTemplates:
@@ -110,6 +110,15 @@ class MessageTemplates:
         return text
     
     @staticmethod
+    def expired_code_message(code_value: str) -> str:
+        """Формирует сообщение для истекшего кода"""
+        return f"""❌ <b>Промо-код истек</b>
+
+Код <code>{code_value}</code> больше недействителен.
+
+🔔 <i>Подпишись на уведомления, чтобы не пропустить новые коды!</i>"""
+    
+    @staticmethod
     def custom_post_message(post_data: Dict[str, Any]) -> str:
         """Формирует кастомное сообщение"""
         return f"{post_data['title']}\n\n{post_data['text']}"
@@ -124,11 +133,11 @@ class MessageTemplates:
 • ❌ Ошибок: {stats['failed']}
 • 🚫 Заблокировано: {stats['blocked']}
 • 👥 Всего подписчиков: {total_subscribers}
-• 📈 Успешность: {round(stats['sent']/total_subscribers*100, 1)}%"""
+• 📈 Успешность: {round(stats['sent']/total_subscribers*100, 1) if total_subscribers > 0 else 0}%"""
 
 
 async def broadcast_new_code(bot: Bot, code: CodeModel) -> Dict[str, int]:
-    """Оптимизированная рассылка нового кода"""
+    """Оптимизированная рассылка нового кода с сохранением ID сообщений"""
     logger.info(f"Начинаю рассылку нового кода: {code.code}")
     
     # Получаем подписчиков
@@ -143,14 +152,19 @@ async def broadcast_new_code(bot: Bot, code: CodeModel) -> Dict[str, int]:
     
     # Выполняем рассылку
     broadcast_manager = BroadcastManager(bot)
-    stats = await broadcast_manager.broadcast_to_users(
+    stats, results = await broadcast_manager.broadcast_to_users(
         user_ids=subscribers,
         text=text,
         reply_markup=keyboard
     )
     
-    # Сохраняем связи сообщений с кодом (упрощенная версия)
-    # В реальной реализации нужно сохранять message_id каждого отправленного сообщения
+    # Сохраняем связи сообщений с кодом для будущих обновлений
+    for i, (user_id, result) in enumerate(zip(subscribers, results)):
+        if result and isinstance(result, int):  # result это message_id
+            try:
+                await db.save_code_message(code.id, user_id, result)
+            except Exception as e:
+                logger.error(f"Ошибка сохранения связи сообщения: {e}")
     
     logger.info(f"Рассылка кода завершена: {stats}")
     return stats
@@ -184,7 +198,7 @@ async def broadcast_custom_post(
     
     # Выполняем рассылку
     broadcast_manager = BroadcastManager(bot)
-    stats = await broadcast_manager.broadcast_to_users(
+    stats, _ = await broadcast_manager.broadcast_to_users(
         user_ids=subscribers,
         text=text,
         photo=image_file_id,
@@ -207,8 +221,7 @@ async def update_expired_code_messages(bot: Bot, code_value: str):
     logger.info(f"Обновляю сообщения для истекшего кода: {code_value}")
     
     try:
-        # Получаем все сообщения связанные с этим кодом
-        # Поскольку код уже удален из БД, используем обходной путь
+        # Получаем все сообщения связанные с этим кодом ПЕРЕД его удалением
         messages = await db.get_code_messages_by_value(code_value)
         
         if not messages:
@@ -216,16 +229,12 @@ async def update_expired_code_messages(bot: Bot, code_value: str):
             return
         
         # Подготавливаем новые данные
-        expired_text = f"""❌ <b>Промо-код истек</b>
-
-Код <code>{code_value}</code> больше недействителен.
-
-🔔 <i>Подпишись на уведомления, чтобы не пропустить новые коды!</i>"""
-        
+        expired_text = MessageTemplates.expired_code_message(code_value)
         expired_keyboard = get_code_activation_keyboard(code_value, is_expired=True)
         
         # Создаем менеджер для безопасного обновления
-        update_manager = BroadcastManager(bot, max_concurrent=5)
+        updated_count = 0
+        failed_count = 0
         
         # Обновляем сообщения
         for msg in messages:
@@ -237,15 +246,18 @@ async def update_expired_code_messages(bot: Bot, code_value: str):
                     reply_markup=expired_keyboard,
                     parse_mode="HTML"
                 )
+                updated_count += 1
                 await asyncio.sleep(0.1)  # Более медленная обработка для edit операций
                 
             except (TelegramBadRequest, TelegramForbiddenError):
                 # Сообщение удалено пользователем или бот заблокирован
+                failed_count += 1
                 continue
             except Exception as e:
                 logger.error(f"Ошибка обновления сообщения {msg.id}: {e}")
+                failed_count += 1
         
-        logger.info(f"Обновление сообщений для кода {code_value} завершено")
+        logger.info(f"Обновление сообщений для кода {code_value} завершено: обновлено {updated_count}, ошибок {failed_count}")
         
     except Exception as e:
         logger.error(f"Критическая ошибка при обновлении сообщений: {e}")
