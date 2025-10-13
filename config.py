@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 @dataclass
 class Config:
@@ -8,7 +8,7 @@ class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
     # ID администраторов (можно несколько, через запятую)
-    ADMIN_IDS: list[int] = [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",")]
+    ADMIN_IDS: List[int] = field(default_factory=lambda: [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",")])
 
     # Настройки базы данных
     DATABASE_PATH: str = "bot_database.db"
