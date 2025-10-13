@@ -6,10 +6,8 @@ from datetime import datetime
 
 from config import BOT_TOKEN
 from database import db
-
-# Импортируем роутеры напрямую из файлов
-from handlers import router as user_router
-from handlers import router as admin_router
+from handlers.user import router as user_router
+from handlers.admin import router as admin_router
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,7 +31,7 @@ async def check_expired_codes(bot: Bot):
                 
                 if success:
                     # Обновляем все старые сообщения с этим кодом
-                    from handlers_admin import update_expired_code_messages
+                    from handlers.admin import update_expired_code_messages
                     await update_expired_code_messages(bot, code.code)
                     logger.info(f"Код {code.code} автоматически истек и сообщения обновлены")
                 
