@@ -396,3 +396,218 @@ class Database:
 
 # Создаем глобальный экземпляр базы данных
 db = Database()
+
+"""
+Дополнительные методы для database.py для работы с сообщениями
+Этот код нужно добавить в существующий файл database.py
+"""
+
+# Добавить в класс Database эти методы:
+
+async def save_code_message(self, message_model) -> bool:
+    """Сохраняет связь между кодом и отправленным сообщением"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO code_messages (code_id, user_id, message_id, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (
+                message_model.code_id,
+                message_model.user_id, 
+                message_model.message_id,
+                serialize_moscow_datetime(message_model.created_at or datetime.now())
+            ))
+            await db.commit()
+            logger.info(f"💾 Сохранена связь сообщения: код {message_model.code_id} -> {message_model.user_id}:{message_model.message_id}")
+            return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения связи сообщения: {e}")
+        return False
+
+
+async def get_code_messages_by_value(self, code_value: str) -> List:
+    """Получает все сообщения связанные с кодом по его значению"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at
+                FROM code_messages cm
+                INNER JOIN codes c ON cm.code_id = c.id
+                WHERE c.code = ? AND cm.is_active = 1
+            """, (code_value.upper(),))
+            
+            rows = await cursor.fetchall()
+            messages = []
+            
+            for row in rows:
+                message = CodeMessageModel(
+                    id=row[0],
+                    code_id=row[1],
+                    user_id=row[2],
+                    message_id=row[3],
+                    created_at=deserialize_moscow_datetime(row[4]) if row[4] else None
+                )
+                messages.append(message)
+            
+            logger.info(f"📨 Найдено сообщений для кода {code_value}: {len(messages)}")
+            return messages
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения сообщений для кода {code_value}: {e}")
+        return []
+
+
+async def get_code_messages_by_id(self, code_id: int) -> List:
+    """Получает все сообщения связанные с кодом по ID"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT id, code_id, user_id, message_id, created_at, is_active
+                FROM code_messages
+                WHERE code_id = ? AND is_active = 1
+            """, (code_id,))
+            
+            rows = await cursor.fetchall()
+            messages = []
+            
+            for row in rows:
+                message = CodeMessageModel(
+                    id=row[0],
+                    code_id=row[1],
+                    user_id=row[2],
+                    message_id=row[3],
+                    created_at=deserialize_moscow_datetime(row[4]) if row[4] else None,
+                    is_active=bool(row[5])
+                )
+                messages.append(message)
+            
+            return messages
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения сообщений для кода ID {code_id}: {e}")
+        return []
+
+
+async def delete_code_messages_by_code_id(self, code_id: int) -> int:
+    """Удаляет все записи сообщений для кода"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                DELETE FROM code_messages WHERE code_id = ?
+            """, (code_id,))
+            await db.commit()
+            
+            deleted_count = cursor.rowcount
+            logger.info(f"🗑️ Удалено записей сообщений для кода {code_id}: {deleted_count}")
+            return deleted_count
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка удаления записей сообщений: {e}")
+        return 0
+
+
+async def mark_code_messages_inactive(self, code_id: int) -> int:
+    """Помечает записи сообщений как неактивные (альтернатива удалению)"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                UPDATE code_messages SET is_active = 0 WHERE code_id = ?
+            """, (code_id,))
+            await db.commit()
+            
+            updated_count = cursor.rowcount
+            logger.info(f"📝 Помечено неактивными записей сообщений: {updated_count}")
+            return updated_count
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка обновления статуса сообщений: {e}")
+        return 0
+
+
+async def get_message_stats(self) -> Dict[str, int]:
+    """Получает статистику сообщений"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            # Общее количество записей сообщений
+            cursor = await db.execute("SELECT COUNT(*) FROM code_messages")
+            total_messages = (await cursor.fetchone())[0]
+            
+            # Активные записи сообщений
+            cursor = await db.execute("SELECT COUNT(*) FROM code_messages WHERE is_active = 1")
+            active_messages = (await cursor.fetchone())[0]
+            
+            # Количество кодов с сообщениями
+            cursor = await db.execute("""
+                SELECT COUNT(DISTINCT code_id) FROM code_messages WHERE is_active = 1
+            """)
+            codes_with_messages = (await cursor.fetchone())[0]
+            
+            return {
+                "total_messages": total_messages,
+                "active_messages": active_messages,
+                "codes_with_messages": codes_with_messages
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения статистики сообщений: {e}")
+        return {"total_messages": 0, "active_messages": 0, "codes_with_messages": 0}
+
+
+async def cleanup_orphaned_messages(self) -> int:
+    """Очищает записи сообщений для несуществующих кодов"""
+    try:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                DELETE FROM code_messages 
+                WHERE code_id NOT IN (SELECT id FROM codes)
+            """)
+            await db.commit()
+            
+            deleted_count = cursor.rowcount
+            logger.info(f"🧹 Очищено потерянных записей сообщений: {deleted_count}")
+            return deleted_count
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка очистки потерянных сообщений: {e}")
+        return 0
+
+
+# Также нужно обновить метод init_db() для создания таблицы code_messages:
+
+async def init_db(self):
+    """Инициализация базы данных с таблицей сообщений"""
+    async with aiosqlite.connect(self.db_path) as db:
+        # Существующие таблицы...
+        
+        # Таблица для отслеживания сообщений
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS code_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                FOREIGN KEY (code_id) REFERENCES codes (id) ON DELETE CASCADE,
+                UNIQUE(code_id, user_id, message_id)
+            )
+        """)
+        
+        # Индексы для оптимизации
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_code_messages_code_id 
+            ON code_messages (code_id)
+        """)
+        
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_code_messages_user_id 
+            ON code_messages (user_id)
+        """)
+        
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_code_messages_active 
+            ON code_messages (is_active)
+        """)
+        
+        await db.commit()
+        logger.info("💾 Таблица code_messages инициализирована")
