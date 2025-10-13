@@ -6,7 +6,10 @@ from datetime import datetime
 
 from config import BOT_TOKEN
 from database import db
-from handlers import user, admin
+
+# Импортируем роутеры напрямую из файлов
+from handlers_user import router as user_router
+from handlers_admin import router as admin_router
 
 # Настройка логирования
 logging.basicConfig(
@@ -30,7 +33,7 @@ async def check_expired_codes(bot: Bot):
                 
                 if success:
                     # Обновляем все старые сообщения с этим кодом
-                    from handlers.admin import update_expired_code_messages
+                    from handlers_admin import update_expired_code_messages
                     await update_expired_code_messages(bot, code.code)
                     logger.info(f"Код {code.code} автоматически истек и сообщения обновлены")
                 
@@ -53,13 +56,13 @@ async def main():
     dp = Dispatcher(storage=storage)
     
     # Подключение роутеров
-    dp.include_router(user.router)
-    dp.include_router(admin.router)
+    dp.include_router(user_router)
+    dp.include_router(admin_router)
     
     # Инициализация базы данных
     await db.init_db()
     
-    logger.info("Бот запущен")
+    logger.info("Бот запущен с полным функционалом управления БД")
     
     # Запускаем фоновую задачу проверки истекших кодов
     expiry_task = asyncio.create_task(check_expired_codes(bot))

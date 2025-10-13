@@ -524,7 +524,6 @@ async def admin_back_callback(callback: CallbackQuery):
     )
     await callback.answer()
 
-# Остальные функции остаются прежними...
 @router.callback_query(lambda c: c.data == "admin_stats", AdminFilter())
 async def admin_stats_callback(callback: CallbackQuery):
     """Показать статистику бота"""
