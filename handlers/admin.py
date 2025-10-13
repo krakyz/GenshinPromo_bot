@@ -1,11 +1,11 @@
 """
-Оптимизированный модуль админ-панели с улучшенной архитектурой
+Улучшенный админ-модуль с таймерами валидации и интерактивными кнопками
 """
 import asyncio
 import logging
 import os
 import hashlib
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from aiogram import Router, F, Bot
@@ -23,7 +23,7 @@ from keyboards.inline import (
     get_admin_users_keyboard, get_database_admin_keyboard, get_admin_back_keyboard
 )
 from utils.date_utils import DateTimeUtils
-from utils.broadcast import broadcast_new_code, broadcast_custom_post
+from utils.broadcast import broadcast_new_code, broadcast_custom_post, update_expired_code_messages
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -32,10 +32,139 @@ router = Router()
 class AdminStates(StatesGroup):
     """Состояния FSM для админ-панели"""
     waiting_for_code_data = State()
-    waiting_for_code_to_expire = State()
     waiting_for_custom_post_data = State()
     waiting_for_custom_post_image = State()
-    waiting_for_db_reset_confirmation = State()
+    # Убрали waiting_for_code_to_expire - теперь используем кнопки
+    # Убрали waiting_for_db_reset_confirmation - теперь используем таймер
+
+
+class TimerManager:
+    """Управляет таймерами валидации для опасных операций"""
+    
+    @staticmethod
+    async def create_expire_code_timer(
+        callback: CallbackQuery,
+        code_value: str,
+        original_text: str
+    ):
+        """Создает 5-секундный таймер для деактивации кода"""
+        for i in range(5, 0, -1):
+            timer_keyboard = [[
+                F.InlineKeyboardButton(
+                    text=f"❌ Деактивировать {code_value} ({i}s)",
+                    callback_data=f"timer_expire_{code_value}_{i}"
+                )
+            ], [
+                F.InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_expire_code")
+            ]]
+            
+            try:
+                await callback.message.edit_text(
+                    f"""{original_text}
+
+⏰ <b>Подтверждение деактивации кода:</b> <code>{code_value}</code>
+
+🔄 Нажми кнопку в течение {i} секунд для подтверждения...
+
+⚠️ <i>Это действие нельзя отменить!</i>""",
+                    parse_mode="HTML",
+                    reply_markup=F.InlineKeyboardMarkup(inline_keyboard=timer_keyboard)
+                )
+            except:
+                pass
+                
+            await asyncio.sleep(1)
+        
+        # Финальная кнопка активации
+        final_keyboard = [[
+            F.InlineKeyboardButton(
+                text=f"🗑️ ДЕАКТИВИРОВАТЬ {code_value}",
+                callback_data=f"confirm_expire_{code_value}"
+            )
+        ], [
+            F.InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_expire_code")
+        ]]
+        
+        try:
+            await callback.message.edit_text(
+                f"""{original_text}
+
+✅ <b>Готов к деактивации:</b> <code>{code_value}</code>
+
+🗑️ Нажми кнопку ниже для окончательной деактивации кода
+
+⚠️ <i>Код будет удален навсегда и все сообщения пользователей обновятся!</i>""",
+                parse_mode="HTML",
+                reply_markup=F.InlineKeyboardMarkup(inline_keyboard=final_keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка создания финальной кнопки: {e}")
+    
+    @staticmethod
+    async def create_reset_db_timer(callback: CallbackQuery):
+        """Создает 5-секундный таймер для сброса БД"""
+        original_text = """🗄️ <b>Управление базой данных</b>
+
+⚠️ <b>ВНИМАНИЕ! Сброс базы данных!</b>
+
+🗑️ <b>Будет удалено:</b>
+• Все промо-коды
+• Все записи сообщений
+
+💾 <b>Будет сохранено:</b>
+• Все пользователи и подписчики"""
+
+        for i in range(5, 0, -1):
+            timer_keyboard = [[
+                F.InlineKeyboardButton(
+                    text=f"🗑️ Сбросить БД ({i}s)",
+                    callback_data=f"timer_reset_db_{i}"
+                )
+            ], [
+                F.InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_database")
+            ]]
+            
+            try:
+                await callback.message.edit_text(
+                    f"""{original_text}
+
+⏰ <b>Подтверждение сброса базы данных</b>
+
+🔄 Нажми кнопку в течение {i} секунд для подтверждения...
+
+⚠️ <i>Это действие нельзя отменить!</i>""",
+                    parse_mode="HTML",
+                    reply_markup=F.InlineKeyboardMarkup(inline_keyboard=timer_keyboard)
+                )
+            except:
+                pass
+                
+            await asyncio.sleep(1)
+        
+        # Финальная кнопка
+        final_keyboard = [[
+            F.InlineKeyboardButton(
+                text="💥 СБРОСИТЬ БАЗУ ДАННЫХ",
+                callback_data="confirm_reset_db"
+            )
+        ], [
+            F.InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_database")
+        ]]
+        
+        try:
+            await callback.message.edit_text(
+                f"""{original_text}
+
+💥 <b>Готов к сбросу базы данных</b>
+
+🗑️ Нажми кнопку ниже для окончательного сброса
+
+⚠️ <i>Все данные будут безвозвратно удалены!</i>""",
+                parse_mode="HTML",
+                reply_markup=F.InlineKeyboardMarkup(inline_keyboard=final_keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка создания финальной кнопки сброса БД: {e}")
 
 
 class AdminService:
@@ -43,14 +172,13 @@ class AdminService:
     
     @staticmethod
     async def get_admin_stats() -> Dict[str, Any]:
-        """Получает статистику для админ-панели"""
+        """Получает статистику для админ-панели БЕЗ списка кодов"""
         try:
             active_codes = await db.get_active_codes()
             total_users, subscribers_count, _ = await db.get_user_stats()
             
             return {
                 'active_codes_count': len(active_codes),
-                'active_codes': active_codes,
                 'total_users': total_users,
                 'subscribers_count': subscribers_count,
                 'updated_at': DateTimeUtils.get_moscow_time()
@@ -104,60 +232,11 @@ class AdminService:
         }
 
 
-class MessageUtils:
-    """Утилиты для работы с сообщениями"""
-    
-    @staticmethod
-    def get_content_hash(text: str) -> str:
-        """Получить хеш контента для сравнения"""
-        return hashlib.md5(text.encode()).hexdigest()
-    
-    @staticmethod
-    async def safe_edit_message(
-        callback: CallbackQuery,
-        new_text: str,
-        reply_markup=None,
-        parse_mode: str = "HTML"
-    ) -> bool:
-        """Безопасное редактирование сообщения с проверкой изменений"""
-        try:
-            current_text = callback.message.text or callback.message.caption or ""
-            
-            current_hash = MessageUtils.get_content_hash(current_text)
-            new_hash = MessageUtils.get_content_hash(new_text)
-            
-            if current_hash == new_hash:
-                await callback.answer("ℹ️ Данные актуальны", show_alert=False)
-                return True
-            
-            await callback.message.edit_text(
-                new_text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup
-            )
-            await callback.answer("✅ Обновлено", show_alert=False)
-            return True
-            
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e):
-                await callback.answer("ℹ️ Данные актуальны", show_alert=False)
-                return True
-            else:
-                logger.error(f"Ошибка Telegram при редактировании: {e}")
-                await callback.answer("❌ Ошибка обновления", show_alert=True)
-                return False
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при редактировании: {e}")
-            await callback.answer("❌ Ошибка обновления", show_alert=True)
-            return False
-
-
 class MessageTemplates:
     """Шаблоны сообщений админ-панели"""
     
     @staticmethod
     def welcome_message() -> str:
-        """Приветственное сообщение админ-панели"""
         return """🔧 <b>Админ-панель бота Genshin Impact кодов</b>
 
 👋 Привет, администратор!
@@ -175,29 +254,34 @@ class MessageTemplates:
     
     @staticmethod
     def stats_message(stats: Dict[str, Any]) -> str:
-        """Сообщение статистики"""
+        """Сообщение статистики БЕЗ списка кодов"""
         if not stats:
             return "❌ <b>Ошибка получения статистики</b>"
         
-        text = f"""📊 <b>Статистика бота</b>
+        return f"""📊 <b>Статистика бота</b>
 
 🎁 <b>Активные промо-коды:</b> {stats.get('active_codes_count', 0)}
 👥 <b>Всего пользователей:</b> {stats.get('total_users', 0)}
 🔔 <b>Подписчики:</b> {stats.get('subscribers_count', 0)}
 📅 <b>Обновлено:</b> {stats.get('updated_at', datetime.now()).strftime('%d.%m.%Y %H:%M МСК')}
 
-<b>Активные коды:</b>"""
+💡 <i>Используй "Активные коды" для просмотра списка кодов</i>"""
+    
+    @staticmethod
+    def expire_codes_message(codes: List[CodeModel]) -> str:
+        """Сообщение для деактивации кодов С КНОПКАМИ"""
+        if not codes:
+            return """🤷‍♂️ <b>Нет активных кодов для деактивации</b>
+
+Добавь новые коды через главное меню админки."""
         
-        active_codes = stats.get('active_codes', [])
-        if active_codes:
-            for code in active_codes:
-                created = code.created_at.strftime('%d.%m') if code.created_at else 'N/A'
-                expires = DateTimeUtils.format_expiry_date(code.expires_date) if code.expires_date else 'Не указано'
-                text += f"\n• <code>{code.code}</code> (добавлен {created}, истекает {expires})"
-        else:
-            text += "\nНет активных кодов"
-        
-        return text
+        return f"""❌ <b>Деактивация промо-кода</b>
+
+📋 <b>Активные коды ({len(codes)}):</b>
+
+Выбери код для деактивации из списка ниже.
+
+⚠️ <i>Деактивация кода обновит все сообщения пользователей!</i>"""
     
     @staticmethod
     def codes_list_message(codes) -> str:
@@ -223,11 +307,286 @@ class MessageTemplates:
 """
         
         return text
+
+
+# Утилитарные функции
+class MessageUtils:
+    @staticmethod
+    def get_content_hash(text: str) -> str:
+        return hashlib.md5(text.encode()).hexdigest()
     
     @staticmethod
-    def users_info_message(total_users: int, subscribers_count: int, recent_users) -> str:
-        """Сообщение с информацией о пользователях"""
-        text = f"""👥 <b>Информация о пользователях</b>
+    async def safe_edit_message(callback: CallbackQuery, new_text: str, reply_markup=None, parse_mode: str = "HTML") -> bool:
+        try:
+            current_text = callback.message.text or callback.message.caption or ""
+            
+            current_hash = MessageUtils.get_content_hash(current_text)
+            new_hash = MessageUtils.get_content_hash(new_text)
+            
+            if current_hash == new_hash:
+                await callback.answer("ℹ️ Данные актуальны", show_alert=False)
+                return True
+            
+            await callback.message.edit_text(new_text, parse_mode=parse_mode, reply_markup=reply_markup)
+            await callback.answer("✅ Обновлено", show_alert=False)
+            return True
+            
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                await callback.answer("ℹ️ Данные актуальны", show_alert=False)
+                return True
+            else:
+                logger.error(f"Ошибка Telegram при редактировании: {e}")
+                await callback.answer("❌ Ошибка обновления", show_alert=True)
+                return False
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при редактировании: {e}")
+            await callback.answer("❌ Ошибка обновления", show_alert=True)
+            return False
+
+
+# Основные обработчики
+@router.message(Command("admin"), AdminFilter())
+async def admin_panel(message: Message):
+    """Главная админ-панель"""
+    welcome_text = MessageTemplates.welcome_message()
+    
+    await message.answer(
+        welcome_text,
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard()
+    )
+
+
+# Статистика БЕЗ списка кодов
+@router.callback_query(F.data == "admin_stats", AdminFilter())
+async def admin_stats_callback(callback: CallbackQuery):
+    """Показать статистику бота БЕЗ списка активных кодов"""
+    try:
+        stats = await AdminService.get_admin_stats()
+        stats_text = MessageTemplates.stats_message(stats)
+        
+        await MessageUtils.safe_edit_message(
+            callback, stats_text, get_admin_stats_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await callback.answer("❌ Ошибка получения статистики", show_alert=True)
+
+
+# Деактивация кодов С КНОПКАМИ
+@router.callback_query(F.data == "admin_expire_code", AdminFilter())
+async def expire_code_callback(callback: CallbackQuery):
+    """Показать коды для деактивации В ВИДЕ КНОПОК"""
+    try:
+        codes = await db.get_active_codes()
+        expire_text = MessageTemplates.expire_codes_message(codes)
+        
+        if not codes:
+            await MessageUtils.safe_edit_message(
+                callback, expire_text, get_admin_back_keyboard()
+            )
+            await callback.answer()
+            return
+        
+        # Создаем кнопки для каждого кода
+        code_buttons = []
+        for code in codes:
+            created = code.created_at.strftime('%d.%m') if code.created_at else '?'
+            expires = DateTimeUtils.format_expiry_date(code.expires_date)[:5] if code.expires_date else 'Безлимит'
+            
+            code_buttons.append([
+                F.InlineKeyboardButton(
+                    text=f"🗑️ {code.code} | {created} → {expires}",
+                    callback_data=f"start_expire_{code.code}"
+                )
+            ])
+        
+        # Добавляем кнопку "Назад"
+        code_buttons.append([
+            F.InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ])
+        
+        await MessageUtils.safe_edit_message(
+            callback, 
+            expire_text, 
+            F.InlineKeyboardMarkup(inline_keyboard=code_buttons)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка получения кодов для деактивации: {e}")
+        await callback.answer("❌ Ошибка получения кодов", show_alert=True)
+
+
+# Запуск таймера деактивации кода
+@router.callback_query(F.data.startswith("start_expire_"), AdminFilter())
+async def start_expire_timer(callback: CallbackQuery):
+    """Запускает таймер для деактивации кода"""
+    code_value = callback.data.replace("start_expire_", "")
+    
+    codes = await db.get_active_codes()
+    original_text = MessageTemplates.expire_codes_message(codes)
+    
+    # Запускаем таймер в фоне
+    asyncio.create_task(
+        TimerManager.create_expire_code_timer(callback, code_value, original_text)
+    )
+    
+    await callback.answer()
+
+
+# Финальная деактивация кода
+@router.callback_query(F.data.startswith("confirm_expire_"), AdminFilter())
+async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
+    """Окончательная деактивация кода"""
+    code_value = callback.data.replace("confirm_expire_", "")
+    
+    try:
+        # Сначала обновляем сообщения пользователей
+        await callback.message.edit_text(
+            f"🔄 <b>Обновляю сообщения пользователей для кода:</b> <code>{code_value}</code>\n\n⏳ Пожалуйста, подожди...",
+            parse_mode="HTML"
+        )
+        
+        # Обновляем все сообщения с этим кодом
+        await update_expired_code_messages(bot, code_value)
+        
+        # Теперь удаляем код из БД
+        success = await db.expire_code(code_value)
+        
+        if success:
+            await callback.message.edit_text(
+                f"✅ <b>Код успешно деактивирован!</b>\n\nКод <code>{code_value}</code> удален из базы данных.\nВсе сообщения пользователей обновлены.",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+        else:
+            await callback.message.edit_text(
+                f"❌ <b>Ошибка!</b>\n\nКод <code>{code_value}</code> не найден в базе данных.",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка деактивации кода {code_value}: {e}")
+        await callback.message.edit_text(
+            f"❌ <b>Произошла ошибка при деактивации кода</b>\n\nКод: <code>{code_value}</code>\nОшибка: {str(e)}",
+            parse_mode="HTML",
+            reply_markup=get_admin_back_keyboard()
+        )
+    
+    await callback.answer()
+
+
+# Сброс БД с таймером
+@router.callback_query(F.data == "admin_reset_db", AdminFilter())
+async def reset_db_callback(callback: CallbackQuery):
+    """Запуск таймера для сброса БД"""
+    # Запускаем таймер в фоне
+    asyncio.create_task(
+        TimerManager.create_reset_db_timer(callback)
+    )
+    
+    await callback.answer()
+
+
+# Финальный сброс БД
+@router.callback_query(F.data == "confirm_reset_db", AdminFilter())
+async def confirm_reset_db(callback: CallbackQuery):
+    """Окончательный сброс базы данных"""
+    try:
+        await callback.message.edit_text(
+            "🔄 <b>Сброс базы данных...</b>\n\n⏳ Пожалуйста, подожди...",
+            parse_mode="HTML"
+        )
+        
+        success = await db.reset_database()
+        
+        if success:
+            await callback.message.edit_text(
+                """✅ <b>База данных успешно сброшена!</b>
+
+🗑️ <b>Удалено:</b>
+• Все промо-коды
+• Все записи сообщений
+
+💾 <b>Сохранено:</b>
+• Все пользователи и подписчики
+
+Бот готов к работе с чистой базой данных.""",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+            logger.info(f"База данных сброшена администратором {callback.from_user.id}")
+        else:
+            await callback.message.edit_text(
+                "❌ <b>Ошибка при сбросе базы данных!</b>\n\nПопробуйте еще раз или обратитесь к разработчику.",
+                parse_mode="HTML",
+                reply_markup=get_admin_back_keyboard()
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при сбросе БД: {e}")
+        await callback.message.edit_text(
+            f"❌ <b>Критическая ошибка при сбросе!</b>\n\nДетали: {str(e)}",
+            parse_mode="HTML",
+            reply_markup=get_admin_back_keyboard()
+        )
+    
+    await callback.answer()
+
+
+# Остальные обработчики (активные коды, пользователи, добавление кода, etc.)
+@router.callback_query(F.data == "admin_active_codes", AdminFilter())
+async def admin_active_codes_callback(callback: CallbackQuery):
+    """Показать все активные коды"""
+    try:
+        codes = await db.get_active_codes()
+        codes_text = MessageTemplates.codes_list_message(codes)
+        
+        await MessageUtils.safe_edit_message(
+            callback, codes_text, get_admin_codes_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка получения активных кодов: {e}")
+        await callback.answer("❌ Ошибка получения кодов", show_alert=True)
+
+
+# Пользователи, база данных, добавление кода остаются без изменений...
+# (Сокращено для экономии места - добавьте из предыдущего файла)
+
+# Возврат в главное меню
+@router.callback_query(F.data == "admin_back", AdminFilter())
+async def admin_back_callback(callback: CallbackQuery, state: FSMContext):
+    """Возврат в главное меню админа"""
+    await state.clear()
+    
+    welcome_text = MessageTemplates.welcome_message()
+    
+    await MessageUtils.safe_edit_message(
+        callback, welcome_text, get_admin_keyboard()
+    )
+
+
+# Обработчик истекших кодов
+@router.callback_query(F.data == "expired_code")
+async def expired_code_callback(callback: CallbackQuery):
+    """Обработчик нажатий на истекшие коды"""
+    await callback.answer(
+        "⌛ Этот промо-код больше не действует.\n\nℹ️ Используй /codes чтобы посмотреть актуальные коды.",
+        show_alert=True
+    )
+
+"""
+Дополнительные обработчики для админ-панели (часть 2)
+"""
+
+# Пользователи
+@router.callback_query(F.data == "admin_users", AdminFilter())
+async def admin_users_callback(callback: CallbackQuery):
+    """Показать информацию о пользователях"""
+    try:
+        total_users, subscribers_count, recent_users = await db.get_user_stats()
+        users_text = f"""👥 <b>Информация о пользователях</b>
 
 📈 <b>Общая статистика:</b>
 • Всего пользователей: {total_users}
@@ -244,82 +603,11 @@ class MessageTemplates:
                 status = "🔔" if user['is_subscribed'] else "🔕"
                 joined = user['joined_at'].strftime('%d.%m.%Y') if user['joined_at'] else 'N/A'
                 
-                text += f"\n\n{status} <b>{name}</b> ({username})"
-                text += f"\n   ID: <code>{user['user_id']}</code>"
-                text += f"\n   Присоединился: {joined}"
+                users_text += f"\n\n{status} <b>{name}</b> ({username})"
+                users_text += f"\n   ID: <code>{user['user_id']}</code>"
+                users_text += f"\n   Присоединился: {joined}"
         else:
-            text += "\n\nПользователи не найдены"
-        
-        return text
-    
-    @staticmethod
-    def database_info_message(stats) -> str:
-        """Сообщение с информацией о БД"""
-        return f"""🗄️ <b>Управление базой данных</b>
-
-📊 <b>Статистика БД:</b>
-• 👥 Пользователи: {stats.get('users', 0)}
-• 🎁 Активных кодов: {stats.get('codes_active', 0)}
-• 📨 Записей сообщений: {stats.get('messages', 0)}
-• 💾 Размер файла: {stats.get('file_size', '0 KB')}
-
-⚠️ <b>Доступные операции:</b>
-• Скачать файл базы данных
-• Сбросить БД (удалить коды и сообщения, сохранить пользователей)"""
-
-
-# Основные обработчики
-@router.message(Command("admin"), AdminFilter())
-async def admin_panel(message: Message):
-    """Главная админ-панель"""
-    welcome_text = MessageTemplates.welcome_message()
-    
-    await message.answer(
-        welcome_text,
-        parse_mode="HTML",
-        reply_markup=get_admin_keyboard()
-    )
-
-
-# Статистика
-@router.callback_query(F.data == "admin_stats", AdminFilter())
-async def admin_stats_callback(callback: CallbackQuery):
-    """Показать статистику бота"""
-    try:
-        stats = await AdminService.get_admin_stats()
-        stats_text = MessageTemplates.stats_message(stats)
-        
-        await MessageUtils.safe_edit_message(
-            callback, stats_text, get_admin_stats_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Ошибка получения статистики: {e}")
-        await callback.answer("❌ Ошибка получения статистики", show_alert=True)
-
-
-# Активные коды
-@router.callback_query(F.data == "admin_active_codes", AdminFilter())
-async def admin_active_codes_callback(callback: CallbackQuery):
-    """Показать все активные коды"""
-    try:
-        codes = await db.get_active_codes()
-        codes_text = MessageTemplates.codes_list_message(codes)
-        
-        await MessageUtils.safe_edit_message(
-            callback, codes_text, get_admin_codes_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Ошибка получения активных кодов: {e}")
-        await callback.answer("❌ Ошибка получения кодов", show_alert=True)
-
-
-# Пользователи
-@router.callback_query(F.data == "admin_users", AdminFilter())
-async def admin_users_callback(callback: CallbackQuery):
-    """Показать информацию о пользователях"""
-    try:
-        total_users, subscribers_count, recent_users = await db.get_user_stats()
-        users_text = MessageTemplates.users_info_message(total_users, subscribers_count, recent_users)
+            users_text += "\n\nПользователи не найдены"
         
         await MessageUtils.safe_edit_message(
             callback, users_text, get_admin_users_keyboard()
@@ -335,7 +623,17 @@ async def admin_database_callback(callback: CallbackQuery):
     """Показать меню управления базой данных"""
     try:
         stats = await db.get_database_stats()
-        db_text = MessageTemplates.database_info_message(stats)
+        db_text = f"""🗄️ <b>Управление базой данных</b>
+
+📊 <b>Статистика БД:</b>
+• 👥 Пользователи: {stats.get('users', 0)}
+• 🎁 Активных кодов: {stats.get('codes_active', 0)}
+• 📨 Записей сообщений: {stats.get('messages', 0)}
+• 💾 Размер файла: {stats.get('file_size', '0 KB')}
+
+⚠️ <b>Доступные операции:</b>
+• Скачать файл базы данных
+• Сбросить БД (удалить коды и сообщения, сохранить пользователей)"""
         
         await MessageUtils.safe_edit_message(
             callback, db_text, get_database_admin_keyboard()
@@ -491,63 +789,6 @@ async def process_new_code(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
 
-# Деактивация кода
-@router.callback_query(F.data == "admin_expire_code", AdminFilter())
-async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
-    """Начать процесс деактивации кода"""
-    codes = await db.get_active_codes()
-    
-    if not codes:
-        await callback.message.edit_text(
-            "🤷‍♂️ <b>Нет активных кодов для деактивации</b>\n\nДобавь новые коды через главное меню админки.",
-            parse_mode="HTML",
-            reply_markup=get_admin_back_keyboard()
-        )
-        await callback.answer()
-        return
-    
-    codes_list = "\n".join([f"• <code>{code.code}</code>" for code in codes])
-    
-    await callback.message.edit_text(
-        f"""❌ <b>Деактивация промо-кода</b>
-
-<b>Активные коды:</b>
-{codes_list}
-
-Отправь код, который нужно деактивировать, или /cancel для отмены:""",
-        parse_mode="HTML",
-        reply_markup=get_admin_back_keyboard()
-    )
-    
-    await state.set_state(AdminStates.waiting_for_code_to_expire)
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_for_code_to_expire, AdminFilter())
-async def process_expire_code(message: Message, state: FSMContext, bot: Bot):
-    """Обработка деактивации кода"""
-    if message.text == "/cancel":
-        await message.answer("❌ Деактивация кода отменена")
-        await state.clear()
-        return
-    
-    code = message.text.strip().upper()
-    success = await db.expire_code(code)
-    
-    if success:
-        await message.answer(
-            f"✅ <b>Код удален!</b>\n\nКод <code>{code}</code> полностью удален из базы данных.",
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(
-            f"❌ <b>Ошибка!</b>\n\nАктивный код <code>{code}</code> не найден.",
-            parse_mode="HTML"
-        )
-    
-    await state.clear()
-
-
 # Кастомный пост (упрощенная версия)
 @router.callback_query(F.data == "admin_custom_post", AdminFilter())
 async def custom_post_callback(callback: CallbackQuery):
@@ -560,19 +801,6 @@ async def custom_post_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-# Возврат в главное меню
-@router.callback_query(F.data == "admin_back", AdminFilter())
-async def admin_back_callback(callback: CallbackQuery, state: FSMContext):
-    """Возврат в главное меню админа"""
-    await state.clear()
-    
-    welcome_text = MessageTemplates.welcome_message()
-    
-    await MessageUtils.safe_edit_message(
-        callback, welcome_text, get_admin_keyboard()
-    )
-
-
 # Отмена действия
 @router.message(Command("cancel"), AdminFilter())
 async def cancel_admin_action(message: Message, state: FSMContext):
@@ -580,98 +808,5 @@ async def cancel_admin_action(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "❌ <b>Действие отменено</b>",
-        parse_mode="HTML",
-        reply_markup=get_admin_keyboard()
+        parse_mode="HTML"
     )
-
-
-# Обработчик истекших кодов
-@router.callback_query(F.data == "expired_code")
-async def expired_code_callback(callback: CallbackQuery):
-    """Обработчик нажатий на истекшие коды"""
-    await callback.answer(
-        "⌛ Этот промо-код больше не действует. Следите за новыми кодами!",
-        show_alert=True
-    )
-
-
-# Сброс БД (защищенная операция)
-@router.callback_query(F.data == "admin_reset_db", AdminFilter())
-async def reset_db_callback(callback: CallbackQuery, state: FSMContext):
-    """Начать процесс сброса БД с подтверждением"""
-    await callback.message.edit_text(
-        """⚠️ <b>ВНИМАНИЕ!</b>
-
-Вы собираетесь сбросить базу данных!
-
-🗑️ <b>Будет удалено:</b>
-• Все промо-коды
-• Все записи сообщений
-
-💾 <b>Будет сохранено:</b>
-• Все пользователи и подписчики
-
-🔐 <b>Для подтверждения отправь команду:</b>
-<code>/confirm_reset_db</code>
-
-⏰ <i>Подтверждение действует только в течение 5 минут</i>
-
-Для отмены нажми 'Назад'""",
-        parse_mode="HTML",
-        reply_markup=get_database_admin_keyboard()
-    )
-    
-    await state.set_state(AdminStates.waiting_for_db_reset_confirmation)
-    await callback.answer()
-
-
-@router.message(Command("confirm_reset_db"), AdminFilter())
-async def confirm_reset_db(message: Message, state: FSMContext):
-    """Подтверждение сброса базы данных"""
-    current_state = await state.get_state()
-    
-    if current_state != AdminStates.waiting_for_db_reset_confirmation.state:
-        await message.answer(
-            """❌ <b>Команда недоступна!</b>
-
-Для сброса базы данных:
-1. Зайди в админ-панель (/admin)
-2. Выбери 'База данных'
-3. Нажми 'Сбросить БД'
-4. Только тогда используй эту команду""",
-            parse_mode="HTML"
-        )
-        return
-    
-    try:
-        success = await db.reset_database()
-        
-        if success:
-            await message.answer(
-                """✅ <b>База данных успешно сброшена!</b>
-
-🗑️ <b>Удалено:</b>
-• Все промо-коды
-• Все записи сообщений
-
-💾 <b>Сохранено:</b>
-• Все пользователи и подписчики
-
-Бот готов к работе с чистой базой данных.""",
-                parse_mode="HTML"
-            )
-            logger.info(f"База данных сброшена администратором {message.from_user.id}")
-        else:
-            await message.answer(
-                "❌ <b>Ошибка при сбросе базы данных!</b>\n\nПопробуйте еще раз или обратитесь к разработчику.",
-                parse_mode="HTML"
-            )
-    
-    except Exception as e:
-        logger.error(f"Ошибка при сбросе БД: {e}")
-        await message.answer(
-            f"❌ <b>Критическая ошибка при сбросе!</b>\n\nДетали: {str(e)}",
-            parse_mode="HTML"
-        )
-    
-    await state.clear()

@@ -1,5 +1,5 @@
 """
-Оптимизированные утилиты для работы с клавиатурами
+Улучшенные клавиатуры с поддержкой истекших кодов
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import List, Tuple, Optional
@@ -64,13 +64,19 @@ class KeyboardBuilder:
 
 # Фабрики специализированных клавиатур
 def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineKeyboardMarkup:
-    """Клавиатура для активации промо-кода"""
+    """
+    Клавиатура для активации промо-кода
+    
+    КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Поддержка истекших кодов
+    """
     if is_expired:
+        # Истекший код - неактивная кнопка + уведомление
         return KeyboardBuilder.create_keyboard(
-            buttons=[[(f"❌ Код истек: {code}", "expired_code")]],
+            buttons=[[(f"⌛ {code} - КОД ИСТЕК", "expired_code")]],
             additional_buttons=[[("📋 Все коды", "view_all_codes")]]
         )
     
+    # Активный код - обычная ссылка для активации
     activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
     return KeyboardBuilder.create_url_keyboard(
         buttons=[(f"🎁 Активировать код: {code}", activation_url)],
@@ -113,7 +119,7 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_admin_stats_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура страницы статистики"""
+    """Клавиатура страницы статистики БЕЗ списка кодов"""
     return KeyboardBuilder.create_keyboard(
         buttons=[],
         back_button=True,
