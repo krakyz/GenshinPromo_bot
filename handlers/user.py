@@ -6,7 +6,9 @@ from aiogram.fsm.context import FSMContext
 from database import db
 from models import UserModel
 from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_all_codes_keyboard
+import logging
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 @router.message(CommandStart())
@@ -51,7 +53,12 @@ async def start_handler(message: Message):
 @router.callback_query(lambda c: c.data == "view_all_codes")
 async def codes_handler(update):
     """Обработчик команды /codes - показать все активные коды одним сообщением"""
+    
+    # Добавим отладку
+    await db.debug_codes()
+    
     codes = await db.get_active_codes()
+    logger.info(f"Получено кодов: {len(codes)}")
     
     # Определяем тип обновления (сообщение или callback)
     if isinstance(update, Message):
@@ -91,7 +98,10 @@ async def codes_handler(update):
         
         # Добавляем информацию о сроке истечения если она есть
         if code.expires_date:
+            logger.info(f"Код {code.code} имеет expires_date: {code.expires_date}")
             codes_text += f"⏰ Действует до: {code.expires_date.strftime('%d.%m.%Y %H:%M')}\n"
+        else:
+            logger.info(f"Код {code.code} НЕ имеет expires_date")
         
         codes_text += "\n"
     
