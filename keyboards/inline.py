@@ -87,6 +87,36 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     
     return keyboard
 
+def get_admin_add_code_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы добавления кода"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    
+    return keyboard
+
+def get_admin_expire_code_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы деактивации кода"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    
+    return keyboard
+
+def get_admin_custom_post_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы создания рекламного поста"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    
+    return keyboard
+
 def get_admin_stats_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру для страницы статистики"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[

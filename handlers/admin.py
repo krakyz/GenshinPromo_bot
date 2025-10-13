@@ -13,7 +13,9 @@ from keyboards.inline import (
     get_admin_keyboard, get_code_activation_keyboard, 
     get_database_admin_keyboard, get_custom_post_keyboard,
     get_custom_post_with_button_keyboard, get_admin_stats_keyboard,
-    get_admin_codes_keyboard, get_admin_users_keyboard
+    get_admin_codes_keyboard, get_admin_users_keyboard,
+    get_admin_add_code_keyboard, get_admin_expire_code_keyboard,
+    get_admin_custom_post_keyboard
 )
 from utils.date_utils import parse_expiry_date, format_expiry_date
 from datetime import datetime
@@ -127,7 +129,8 @@ async def add_code_callback(callback: CallbackQuery, state: FSMContext):
         "15.10.2025 23:59</code>\n\n"
         "Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ или ДД.ММ.ГГГГ\n\n"
         "Или отправь /cancel для отмены",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_admin_add_code_keyboard()
     )
     
     await state.set_state(AdminStates.waiting_for_code_data)
@@ -228,9 +231,10 @@ async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
     
     if not codes:
         await callback.message.edit_text(
-            "🤷‍♂️ <b>Нет активных кодов для деактивации</b>",
+            "🤷‍♂️ <b>Нет активных кодов для деактивации</b>\n\n"
+            "Добавь новые коды через главное меню админки.",
             parse_mode="HTML",
-            reply_markup=get_admin_keyboard()
+            reply_markup=get_admin_expire_code_keyboard()
         )
         await callback.answer()
         return
@@ -241,7 +245,8 @@ async def expire_code_callback(callback: CallbackQuery, state: FSMContext):
         f"❌ <b>Деактивация промо-кода</b>\n\n"
         f"<b>Активные коды:</b>\n{codes_list}\n\n"
         f"Отправь код, который нужно деактивировать, или /cancel для отмены:",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_admin_expire_code_keyboard()
     )
     
     await state.set_state(AdminStates.waiting_for_code_to_expire)
@@ -296,7 +301,8 @@ async def custom_post_callback(callback: CallbackQuery, state: FSMContext):
         "Купить сейчас\n"
         "https://example.com</code>\n\n"
         "Или отправь /cancel для отмены",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_admin_custom_post_keyboard()
     )
     
     await state.set_state(AdminStates.waiting_for_custom_post_data)
