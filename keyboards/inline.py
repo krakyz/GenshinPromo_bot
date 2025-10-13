@@ -1,21 +1,34 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-def get_code_activation_keyboard(code: str) -> InlineKeyboardMarkup:
+def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineKeyboardMarkup:
     """Создает клавиатуру с кнопкой активации кода и дополнительными опциями"""
-    activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
+    inline_keyboard = []
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=f"🎁 Активировать код: {code}",
-            url=activation_url
-        )],
-        [
-            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
-            InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
-        ]
+    if not is_expired:
+        # Активная кнопка для активации
+        activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
+        inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎁 Активировать код: {code}",
+                url=activation_url
+            )
+        ])
+    else:
+        # Неактивная кнопка для истекшего кода
+        inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"❌ Код истек: {code}",
+                callback_data="expired_code"
+            )
+        ])
+    
+    # Стандартные кнопки навигации
+    inline_keyboard.append([
+        InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes"),
+        InlineKeyboardButton(text="🔕 Отписаться", callback_data="unsubscribe")
     ])
     
-    return keyboard
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 def get_subscription_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру для управления подпиской"""
