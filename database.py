@@ -396,3 +396,490 @@ class Database:
 
 # Создаем глобальный экземпляр базы данных
 db = Database()
+
+"""
+Дополнительные методы базы данных для системы обновления истекших сообщений
+"""
+import aiosqlite
+import logging
+from typing import List, Dict, Any, Optional
+from models import CodeMessageModel
+
+logger = logging.getLogger(__name__)
+
+class DatabaseExtensions:
+    """Расширения базы данных для работы с сообщениями кодов"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+    
+    async def save_code_message(self, code_id: int, user_id: int, message_id: int) -> bool:
+        """
+        Сохраняет связь между кодом и отправленным сообщением
+        
+        Args:
+            code_id: ID кода в БД
+            user_id: ID пользователя Telegram
+            message_id: ID сообщения Telegram
+            
+        Returns:
+            bool: Успешность операции
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute(
+                    "INSERT INTO code_messages (code_id, user_id, message_id, created_at, is_active) VALUES (?, ?, ?, datetime('now'), 1)",
+                    (code_id, user_id, message_id)
+                )
+                await conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения связи сообщения: {e}")
+            return False
+    
+    async def get_code_messages_by_value(self, code_value: str) -> List[CodeMessageModel]:
+        """
+        КЛЮЧЕВОЙ МЕТОД: Получает все сообщения связанные с кодом ПО ЕГО ЗНАЧЕНИЮ
+        Это критично, т.к. код может быть удален из таблицы codes, но нам нужны его сообщения
+        
+        Args:
+            code_value: Значение кода (например "GIFTCODE")
+            
+        Returns:
+            List[CodeMessageModel]: Список сообщений связанных с кодом
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                # Используем JOIN для получения сообщений по значению кода
+                cursor = await conn.execute("""
+                    SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at, cm.is_active
+                    FROM code_messages cm
+                    JOIN codes c ON cm.code_id = c.id
+                    WHERE c.code = ? AND cm.is_active = 1
+                """, (code_value,))
+                
+                rows = await cursor.fetchall()
+                
+                messages = []
+                for row in rows:
+                    message = CodeMessageModel(
+                        id=row[0],
+                        code_id=row[1], 
+                        user_id=row[2],
+                        message_id=row[3],
+                        # created_at парсим из строки
+                        is_active=bool(row[5])
+                    )
+                    messages.append(message)
+                
+                logger.debug(f"🔍 Найдено сообщений для кода {code_value}: {len(messages)}")
+                return messages
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения сообщений для кода {code_value}: {e}")
+            return []
+    
+    async def cleanup_expired_code_messages(self, code_value: str) -> bool:
+        """
+        Очищает записи сообщений для истекшего кода
+        
+        Args:
+            code_value: Значение истекшего кода
+            
+        Returns:
+            bool: Успешность операции
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                # Помечаем сообщения как неактивные вместо удаления
+                await conn.execute("""
+                    UPDATE code_messages 
+                    SET is_active = 0 
+                    WHERE code_id IN (
+                        SELECT id FROM codes WHERE code = ?
+                    )
+                """, (code_value,))
+                
+                await conn.commit()
+                
+                # Получаем количество обновленных записей
+                cursor = await conn.execute("SELECT changes()")
+                changes = await cursor.fetchone()
+                
+                logger.info(f"🧹 Очищено записей сообщений для кода {code_value}: {changes[0] if changes else 0}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка очистки сообщений для кода {code_value}: {e}")
+            return False
+    
+    async def get_all_subscribers(self) -> List[int]:
+        """
+        Получает список всех подписчиков для рассылки
+        
+        Returns:
+            List[int]: Список user_id подписчиков
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cursor = await conn.execute(
+                    "SELECT user_id FROM users WHERE is_subscribed = 1"
+                )
+                rows = await cursor.fetchall()
+                
+                subscribers = [row[0] for row in rows]
+                logger.debug(f"📨 Получено подписчиков для рассылки: {len(subscribers)}")
+                return subscribers
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения подписчиков: {e}")
+            return []
+    
+    async def get_codes_to_expire(self) -> List:
+        """
+        Получает коды которые истекли и требуют обработки
+        
+        Returns:
+            List: Список истекших кодов
+        """
+        try:
+            from utils.date_utils import get_moscow_time
+            moscow_now = get_moscow_time()
+            
+            async with aiosqlite.connect(self.db_path) as conn:
+                cursor = await conn.execute("""
+                    SELECT id, code, description, rewards, expires_date, created_at
+                    FROM codes 
+                    WHERE expires_date IS NOT NULL 
+                    AND datetime(expires_date) <= datetime('now') 
+                    AND is_active = 1
+                """)
+                
+                rows = await cursor.fetchall()
+                
+                codes = []
+                for row in rows:
+                    # Создаем простой объект кода
+                    code = type('Code', (), {
+                        'id': row[0],
+                        'code': row[1],
+                        'description': row[2],
+                        'rewards': row[3],
+                        'expires_date': row[4],
+                        'created_at': row[5]
+                    })
+                    codes.append(code)
+                
+                logger.debug(f"⏰ Найдено истекших кодов: {len(codes)}")
+                return codes
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения истекших кодов: {e}")
+            return []
+    
+    async def expire_code_by_id(self, code_id: int) -> bool:
+        """
+        Деактивирует код по его ID
+        
+        Args:
+            code_id: ID кода в базе данных
+            
+        Returns:
+            bool: Успешность операции
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute(
+                    "UPDATE codes SET is_active = 0 WHERE id = ?",
+                    (code_id,)
+                )
+                await conn.commit()
+                
+                # Проверяем количество обновленных записей
+                cursor = await conn.execute("SELECT changes()")
+                changes = await cursor.fetchone()
+                
+                success = changes and changes[0] > 0
+                if success:
+                    logger.info(f"✅ Код с ID {code_id} деактивирован")
+                else:
+                    logger.warning(f"⚠️ Код с ID {code_id} не найден для деактивации")
+                
+                return success
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка деактивации кода с ID {code_id}: {e}")
+            return False
+    
+    async def get_active_codes(self):
+        """
+        Получает все активные коды
+        
+        Returns:
+            List: Список активных кодов
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cursor = await conn.execute("""
+                    SELECT id, code, description, rewards, expires_date, created_at
+                    FROM codes 
+                    WHERE is_active = 1
+                    ORDER BY created_at DESC
+                """)
+                
+                rows = await cursor.fetchall()
+                
+                from models import CodeModel
+                codes = []
+                for row in rows:
+                    code = CodeModel(
+                        id=row[0],
+                        code=row[1],
+                        description=row[2],
+                        rewards=row[3],
+                        expires_date=row[4],
+                        created_at=row[5],
+                        is_active=True
+                    )
+                    codes.append(code)
+                
+                return codes
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения активных кодов: {e}")
+            return []
+
+
+# Функции для интеграции с существующим кодом
+async def create_message_tracking_table(db_path: str):
+    """Создает таблицу для отслеживания сообщений если она не существует"""
+    try:
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS code_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    FOREIGN KEY (code_id) REFERENCES codes (id),
+                    INDEX idx_code_messages_code_id (code_id),
+                    INDEX idx_code_messages_user_id (user_id),
+                    INDEX idx_code_messages_active (is_active)
+                )
+            """)
+            await conn.commit()
+            logger.info("✅ Таблица code_messages создана/проверена")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания таблицы code_messages: {e}")
+
+# ========== ФАЙЛ 2: database.py (ДОПОЛНЕНИЯ) ==========
+"""
+ДОБАВИТЬ ЭТИ МЕТОДЫ В СУЩЕСТВУЮЩИЙ КЛАСС DATABASE
+"""
+
+async def save_code_message(self, code_id: int, user_id: int, message_id: int) -> bool:
+    """Сохраняет связь между кодом и отправленным сообщением"""
+    try:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO code_messages (code_id, user_id, message_id, created_at, is_active) VALUES (?, ?, ?, datetime('now'), 1)",
+                (code_id, user_id, message_id)
+            )
+            await conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения связи сообщения: {e}")
+        return False
+
+async def get_code_messages_by_value(self, code_value: str) -> List:
+    """Получает все сообщения связанные с кодом ПО ЕГО ЗНАЧЕНИЮ"""
+    try:
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute("""
+                SELECT cm.id, cm.code_id, cm.user_id, cm.message_id, cm.created_at, cm.is_active
+                FROM code_messages cm
+                JOIN codes c ON cm.code_id = c.id
+                WHERE c.code = ? AND cm.is_active = 1
+            """, (code_value,))
+            
+            rows = await cursor.fetchall()
+            
+            messages = []
+            for row in rows:
+                from models import CodeMessageModel
+                message = CodeMessageModel(
+                    id=row[0],
+                    code_id=row[1], 
+                    user_id=row[2],
+                    message_id=row[3],
+                    is_active=bool(row[5])
+                )
+                messages.append(message)
+            
+            return messages
+    except Exception as e:
+        logger.error(f"Ошибка получения сообщений для кода {code_value}: {e}")
+        return []
+
+async def cleanup_expired_code_messages(self, code_value: str) -> bool:
+    """Очищает записи сообщений для истекшего кода"""
+    try:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("""
+                UPDATE code_messages 
+                SET is_active = 0 
+                WHERE code_id IN (
+                    SELECT id FROM codes WHERE code = ?
+                )
+            """, (code_value,))
+            await conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка очистки сообщений для кода {code_value}: {e}")
+        return False
+
+async def get_all_subscribers(self) -> List[int]:
+    """Получает список всех подписчиков для рассылки"""
+    try:
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute("SELECT user_id FROM users WHERE is_subscribed = 1")
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+    except Exception as e:
+        logger.error(f"Ошибка получения подписчиков: {e}")
+        return []
+
+async def get_codes_to_expire(self) -> List:
+    """Получает коды которые истекли и требуют обработки"""
+    try:
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute("""
+                SELECT id, code, description, rewards, expires_date, created_at
+                FROM codes 
+                WHERE expires_date IS NOT NULL 
+                AND datetime(expires_date) <= datetime('now') 
+                AND is_active = 1
+            """)
+            
+            rows = await cursor.fetchall()
+            codes = []
+            for row in rows:
+                code = type('Code', (), {
+                    'id': row[0], 'code': row[1], 'description': row[2],
+                    'rewards': row[3], 'expires_date': row[4], 'created_at': row[5]
+                })
+                codes.append(code)
+            
+            return codes
+    except Exception as e:
+        logger.error(f"Ошибка получения истекших кодов: {e}")
+        return []
+
+async def expire_code_by_id(self, code_id: int) -> bool:
+    """Деактивирует код по его ID"""
+    try:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("UPDATE codes SET is_active = 0 WHERE id = ?", (code_id,))
+            await conn.commit()
+            
+            cursor = await conn.execute("SELECT changes()")
+            changes = await cursor.fetchone()
+            return changes and changes[0] > 0
+    except Exception as e:
+        logger.error(f"Ошибка деактивации кода с ID {code_id}: {e}")
+        return False
+
+
+# ========== ФАЙЛ 3: database.py (ИНИЦИАЛИЗАЦИЯ ТАБЛИЦЫ) ==========
+"""
+ДОБАВИТЬ В МЕТОД ИНИЦИАЛИЗАЦИИ БД
+"""
+
+async def create_tables(self):
+    """Создает все необходимые таблицы"""
+    async with aiosqlite.connect(self.db_path) as conn:
+        # ... существующие таблицы ...
+        
+        # ДОБАВИТЬ ЭТУ ТАБЛИЦУ:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS code_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT 1,
+                FOREIGN KEY (code_id) REFERENCES codes (id)
+            )
+        """)
+        
+        # Создаем индексы для оптимизации
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_code_id ON code_messages (code_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_user_id ON code_messages (user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_code_messages_active ON code_messages (is_active)")
+        
+        await conn.commit()
+
+
+# ========== ФАЙЛ 4: scheduler.py (ИСПРАВЛЕННЫЙ) ==========
+
+import asyncio
+import logging
+from aiogram import Bot
+from database import db
+from utils.date_utils import get_moscow_time
+from utils.broadcast import update_expired_code_messages
+
+logger = logging.getLogger(__name__)
+
+async def check_expired_codes(bot: Bot):
+    """Проверка и обработка истекших кодов с обновлением сообщений"""
+    try:
+        moscow_now = get_moscow_time()
+        logger.info(f"🔍 Проверка истекших кодов: {moscow_now.strftime('%d.%m.%Y %H:%M:%S')}")
+        
+        codes_to_expire = await db.get_codes_to_expire()
+        
+        if not codes_to_expire:
+            logger.debug("✅ Истекших кодов не найдено")
+            return
+        
+        logger.info(f"⏰ Найдено истекших кодов: {len(codes_to_expire)}")
+        
+        for code in codes_to_expire:
+            try:
+                logger.info(f"🗑️ Обрабатываю истекший код: {code.code}")
+                
+                # 1. СНАЧАЛА обновляем все сообщения с этим кодом
+                await update_expired_code_messages(bot, code.code)
+                
+                # 2. ПОТОМ удаляем код из базы данных
+                success = await db.expire_code_by_id(code.id)
+                
+                if success:
+                    logger.info(f"✅ Код {code.code} успешно деактивирован")
+                else:
+                    logger.warning(f"⚠️ Не удалось деактивировать код {code.code}")
+                
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки кода {code.code}: {e}")
+                
+    except Exception as e:
+        logger.error(f"💥 Критическая ошибка при проверке истекших кодов: {e}")
+
+async def start_scheduler(bot: Bot):
+    """Запуск планировщика задач"""
+    moscow_time = get_moscow_time()
+    logger.info(f"🚀 Планировщик запущен: {moscow_time.strftime('%d.%m.%Y %H:%M:%S')}")
+    
+    while True:
+        try:
+            await check_expired_codes(bot)
+            await asyncio.sleep(300)  # 5 минут
+        except Exception as e:
+            logger.error(f"💥 Ошибка в планировщике: {e}")
+            await asyncio.sleep(60)  # При ошибке ждем 1 минуту
