@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from database import db
 from models import UserModel
 from keyboards.inline import get_subscription_keyboard, get_code_activation_keyboard, get_all_codes_keyboard
+from utils.date_utils import format_expiry_date
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ async def start_handler(message: Message):
 /unsubscribe - отписаться от уведомлений
 /help - показать справку
 
+⏰ <i>Все сроки указаны в московском времени (МСК)</i>
+
 Удачи в путешествии по Тейвату! ✨
 """
     
@@ -53,10 +56,6 @@ async def start_handler(message: Message):
 @router.callback_query(lambda c: c.data == "view_all_codes")
 async def codes_handler(update):
     """Обработчик команды /codes - показать все активные коды одним сообщением"""
-    
-    # Добавим отладку
-    await db.debug_codes()
-    
     codes = await db.get_active_codes()
     logger.info(f"Получено кодов: {len(codes)}")
     
@@ -98,14 +97,13 @@ async def codes_handler(update):
         
         # Добавляем информацию о сроке истечения если она есть
         if code.expires_date:
-            logger.info(f"Код {code.code} имеет expires_date: {code.expires_date}")
-            codes_text += f"⏰ Действует до: {code.expires_date.strftime('%d.%m.%Y %H:%M')}\n"
-        else:
-            logger.info(f"Код {code.code} НЕ имеет expires_date")
+            expires_text = format_expiry_date(code.expires_date)
+            codes_text += f"⏰ Действует до: {expires_text}\n"
         
         codes_text += "\n"
     
-    codes_text += "💡 <i>Нажми на кнопку с кодом ниже для активации!</i>"
+    codes_text += "💡 <i>Нажми на кнопку с кодом ниже для активации!</i>\n"
+    codes_text += "⏰ <i>Время указано в МСК (московское время)</i>"
     
     # Создаем клавиатуру со всеми кодами
     keyboard = get_all_codes_keyboard(codes)
@@ -139,6 +137,7 @@ async def help_handler(message: Message):
 • Каждый код можно использовать только один раз
 • Коды имеют ограниченное время действия
 • Для активации нужен Adventure Rank 10+
+• ⏰ Все сроки указаны в московском времени (МСК)
 
 📢 <b>Уведомления:</b>
 Подпишись, чтобы получать мгновенные уведомления о новых промо-кодах!
@@ -161,7 +160,8 @@ async def subscribe_callback(callback: CallbackQuery):
         await callback.message.edit_text(
             "🔔 <b>Отлично!</b>\n\n"
             "Ты подписался на уведомления о новых промо-кодах Genshin Impact!\n"
-            "Теперь ты будешь получать уведомления о каждом новом коде.",
+            "Теперь ты будешь получать уведомления о каждом новом коде.\n\n"
+            "⏰ <i>Все сроки указаны в московском времени (МСК)</i>",
             parse_mode="HTML",
             reply_markup=get_subscription_keyboard()
         )

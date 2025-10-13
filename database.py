@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 from datetime import datetime
 from models import CodeModel, UserModel, CodeMessageModel
 from config import DATABASE_PATH
+from utils.date_utils import get_moscow_time, serialize_moscow_datetime, deserialize_moscow_datetime
 import os
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,11 @@ class Database:
         """Добавить новый промо-код и вернуть его ID"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                # Сериализуем даты для хранения в UTC
+                expires_date_str = None
+                if code.expires_date:
+                    expires_date_str = serialize_moscow_datetime(code.expires_date)
+                
                 cursor = await db.execute('''
                     INSERT INTO codes (code, description, rewards, is_active, created_at, expired_at, expires_date)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -70,13 +76,13 @@ class Database:
                     code.description,
                     code.rewards,
                     code.is_active,
-                    code.created_at,
+                    datetime.utcnow().isoformat() if code.created_at else datetime.utcnow().isoformat(),
                     code.expired_at,
-                    code.expires_date
+                    expires_date_str
                 ))
                 await db.commit()
                 code_id = cursor.lastrowid
-                logger.info(f"Добавлен новый код: {code.code} (ID: {code_id}), expires_date: {code.expires_date}")
+                logger.info(f"Добавлен новый код: {code.code} (ID: {code_id}), expires_date: {expires_date_str}")
                 return code_id
         except aiosqlite.IntegrityError:
             logger.warning(f"Код {code.code} уже существует")
@@ -86,7 +92,7 @@ class Database:
             return None
     
     async def get_active_codes(self) -> List[CodeModel]:
-        """Получить все активные промо-коды (включая временные)"""
+        """Получить все активные промо-коды"""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute('''
                 SELECT id, code, description, rewards, is_active, created_at, expired_at, expires_date
@@ -97,61 +103,91 @@ class Database:
                 rows = await cursor.fetchall()
                 codes = []
                 for row in rows:
+                    # Десериализация дат
+                    created_at = None
+                    if row[5]:
+                        try:
+                            created_at = datetime.fromisoformat(row[5])
+                        except:
+                            created_at = None
+                    
+                    expired_at = None
+                    if row[6]:
+                        try:
+                            expired_at = datetime.fromisoformat(row[6])
+                        except:
+                            expired_at = None
+                    
+                    expires_date = None
+                    if row[7]:
+                        expires_date = deserialize_moscow_datetime(row[7])
+                    
                     code_model = CodeModel(
                         id=row[0],
                         code=row[1],
                         description=row[2],
                         rewards=row[3],
                         is_active=bool(row[4]),
-                        created_at=datetime.fromisoformat(row[5]) if row[5] else None,
-                        expired_at=datetime.fromisoformat(row[6]) if row[6] else None,
-                        expires_date=datetime.fromisoformat(row[7]) if row[7] else None
+                        created_at=created_at,
+                        expired_at=expired_at,
+                        expires_date=expires_date
                     )
                     codes.append(code_model)
-                    logger.debug(f"Загружен код: {code_model.code}, expires_date: {code_model.expires_date}, is_active: {code_model.is_active}")
+                    logger.debug(f"Загружен код: {code_model.code}, expires_date: {code_model.expires_date}")
                 
                 logger.info(f"Найдено активных кодов: {len(codes)}")
                 return codes
     
     async def get_codes_to_expire(self) -> List[CodeModel]:
-        """Получить коды, которые должны истечь (expires_date <= сейчас)"""
-        now = datetime.now()
+        """Получить коды, которые должны истечь (по московскому времени)"""
+        moscow_now = get_moscow_time()
+        moscow_now_utc = moscow_now.astimezone(datetime.now().astimezone().tzinfo.replace('UTC'))
+        
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute('''
                 SELECT id, code, description, rewards, is_active, created_at, expired_at, expires_date
                 FROM codes
-                WHERE is_active = 1 AND expires_date IS NOT NULL AND expires_date <= ?
-            ''', (now,)) as cursor:
+                WHERE is_active = 1 AND expires_date IS NOT NULL
+            ''') as cursor:
                 rows = await cursor.fetchall()
-                codes = []
-                for row in rows:
-                    code_model = CodeModel(
-                        id=row[0],
-                        code=row[1],
-                        description=row[2],
-                        rewards=row[3],
-                        is_active=bool(row[4]),
-                        created_at=datetime.fromisoformat(row[5]) if row[5] else None,
-                        expired_at=datetime.fromisoformat(row[6]) if row[6] else None,
-                        expires_date=datetime.fromisoformat(row[7]) if row[7] else None
-                    )
-                    codes.append(code_model)
+                codes_to_expire = []
                 
-                logger.info(f"Найдено кодов для истечения: {len(codes)}")
-                return codes
+                for row in rows:
+                    expires_date = None
+                    if row[7]:
+                        expires_date = deserialize_moscow_datetime(row[7])
+                        
+                        # Проверяем, истек ли код
+                        if expires_date and moscow_now >= expires_date:
+                            code_model = CodeModel(
+                                id=row[0],
+                                code=row[1],
+                                description=row[2],
+                                rewards=row[3],
+                                is_active=bool(row[4]),
+                                created_at=datetime.fromisoformat(row[5]) if row[5] else None,
+                                expired_at=datetime.fromisoformat(row[6]) if row[6] else None,
+                                expires_date=expires_date
+                            )
+                            codes_to_expire.append(code_model)
+                            logger.debug(f"Код к истечению: {code_model.code}, истекает: {expires_date}")
+                
+                logger.info(f"Найдено кодов для истечения: {len(codes_to_expire)}")
+                return codes_to_expire
     
     async def expire_code(self, code: str) -> bool:
         """Пометить код как истекший"""
         try:
+            moscow_now = get_moscow_time()
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute('''
                     UPDATE codes SET is_active = 0, expired_at = ?
                     WHERE code = ? AND is_active = 1
-                ''', (datetime.now(), code))
+                ''', (serialize_moscow_datetime(moscow_now), code))
                 await db.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"Код {code} помечен как истекший")
+                    logger.info(f"Код {code} помечен как истекший в {moscow_now.strftime('%d.%m.%Y %H:%M МСК')}")
                     return True
                 else:
                     logger.warning(f"Активный код {code} не найден")
@@ -163,15 +199,16 @@ class Database:
     async def expire_code_by_id(self, code_id: int) -> bool:
         """Пометить код как истекший по ID"""
         try:
+            moscow_now = get_moscow_time()
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute('''
                     UPDATE codes SET is_active = 0, expired_at = ?
                     WHERE id = ? AND is_active = 1
-                ''', (datetime.now(), code_id))
+                ''', (serialize_moscow_datetime(moscow_now), code_id))
                 await db.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"Код с ID {code_id} помечен как истекший")
+                    logger.info(f"Код с ID {code_id} помечен как истекший в {moscow_now.strftime('%d.%m.%Y %H:%M МСК')}")
                     return True
                 else:
                     logger.warning(f"Активный код с ID {code_id} не найден")
@@ -276,7 +313,7 @@ class Database:
                 await db.execute('''
                     INSERT INTO code_messages (code_id, user_id, message_id, created_at)
                     VALUES (?, ?, ?, ?)
-                ''', (code_id, user_id, message_id, datetime.now()))
+                ''', (code_id, user_id, message_id, datetime.utcnow().isoformat()))
                 await db.commit()
                 logger.debug(f"Сохранена связь: код {code_id}, пользователь {user_id}, сообщение {message_id}")
                 return True
@@ -308,13 +345,9 @@ class Database:
         """Сброс базы данных (удаление всех данных кроме пользователей)"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Удаляем все записи из таблиц, кроме пользователей
                 await db.execute('DELETE FROM code_messages')
                 await db.execute('DELETE FROM codes')
-                
-                # Сбрасываем автоинкремент для таблиц
                 await db.execute('DELETE FROM sqlite_sequence WHERE name IN ("codes", "code_messages")')
-                
                 await db.commit()
                 logger.info("База данных сброшена (пользователи сохранены)")
                 return True
@@ -328,23 +361,18 @@ class Database:
             async with aiosqlite.connect(self.db_path) as db:
                 stats = {}
                 
-                # Количество пользователей
                 async with db.execute('SELECT COUNT(*) FROM users') as cursor:
                     stats['users'] = (await cursor.fetchone())[0]
                 
-                # Количество кодов
                 async with db.execute('SELECT COUNT(*) FROM codes') as cursor:
                     stats['codes_total'] = (await cursor.fetchone())[0]
                 
-                # Количество активных кодов
                 async with db.execute('SELECT COUNT(*) FROM codes WHERE is_active = 1') as cursor:
                     stats['codes_active'] = (await cursor.fetchone())[0]
                 
-                # Количество записей сообщений
                 async with db.execute('SELECT COUNT(*) FROM code_messages') as cursor:
                     stats['messages'] = (await cursor.fetchone())[0]
                 
-                # Размер файла базы данных
                 if os.path.exists(self.db_path):
                     size_bytes = os.path.getsize(self.db_path)
                     stats['file_size'] = f"{size_bytes / 1024:.1f} KB"
@@ -355,20 +383,6 @@ class Database:
         except Exception as e:
             logger.error(f"Ошибка при получении статистики БД: {e}")
             return {}
-    
-    async def debug_codes(self):
-        """Отладочная функция для проверки кодов в БД"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute('''
-                SELECT id, code, description, rewards, is_active, expires_date
-                FROM codes
-                ORDER BY created_at DESC
-            ''') as cursor:
-                rows = await cursor.fetchall()
-                logger.info("=== ОТЛАДКА: Все коды в БД ===")
-                for row in rows:
-                    logger.info(f"ID: {row[0]}, Код: {row[1]}, Активен: {row[4]}, Истекает: {row[5]}")
-                logger.info("=== КОНЕЦ ОТЛАДКИ ===")
 
 # Создаем глобальный экземпляр базы данных
 db = Database()
