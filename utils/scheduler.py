@@ -1,5 +1,5 @@
 """
-Исправленный scheduler.py с автоматическим обновлением истекших сообщений
+Исправленный scheduler.py с корректными функциями для main.py
 """
 import asyncio
 import logging
@@ -9,7 +9,6 @@ from aiogram import Bot
 
 from database import db
 from models import CodeModel
-from utils.broadcast import update_expired_code_messages
 from utils.date_utils import get_moscow_time
 
 logger = logging.getLogger(__name__)
@@ -80,6 +79,7 @@ class SchedulerService:
             logger.info(f"🔄 Обрабатываю истекший код: {code.code}")
             
             # 1. Обновляем сообщения пользователей
+            from utils.broadcast import update_expired_code_messages
             await update_expired_code_messages(self.bot, code.code)
             
             # 2. Удаляем код из базы данных
@@ -110,12 +110,20 @@ class SchedulerService:
         }
 
 
-# Глобальный экземпляр планировщика (будет инициализирован в main.py)
+# Глобальный экземпляр планировщика
 scheduler_service: SchedulerService = None
 
 
-async def init_scheduler(bot: Bot):
-    """Инициализация планировщика"""
+async def init_scheduler(bot: Bot) -> SchedulerService:
+    """
+    Инициализация планировщика
+    
+    Args:
+        bot: Экземпляр бота
+        
+    Returns:
+        SchedulerService: Инициализированный планировщик
+    """
     global scheduler_service
     
     scheduler_service = SchedulerService(bot)
@@ -124,20 +132,43 @@ async def init_scheduler(bot: Bot):
     return scheduler_service
 
 
-async def start_scheduler():
-    """Запуск планировщика (вызывается из main.py)"""
-    if scheduler_service:
-        asyncio.create_task(scheduler_service.start())
-        logger.info("📅 Планировщик запущен в фоновом режиме")
-    else:
-        logger.error("❌ Планировщик не инициализирован")
+async def start_scheduler_background(scheduler: SchedulerService):
+    """
+    Запуск планировщика в фоновом режиме
+    
+    Args:
+        scheduler: Экземпляр планировщика
+    """
+    try:
+        await scheduler.start()
+    except asyncio.CancelledError:
+        logger.info("📅 Планировщик отменен")
+        await scheduler.stop()
+    except Exception as e:
+        logger.error(f"❌ Ошибка в планировщике: {e}")
 
 
 async def stop_scheduler():
     """Остановка планировщика"""
+    global scheduler_service
     if scheduler_service:
         await scheduler_service.stop()
         logger.info("📅 Планировщик остановлен")
+
+
+# Функции для обратной совместимости с старым кодом
+
+async def start_scheduler():
+    """
+    Старая функция start_scheduler без параметров
+    (для совместимости со старым main.py)
+    """
+    logger.warning("⚠️ Вызвана устаревшая функция start_scheduler(). Используйте init_scheduler() и start_scheduler_background()")
+    
+    if scheduler_service:
+        await scheduler_service.start()
+    else:
+        logger.error("❌ Планировщик не инициализирован. Вызовите init_scheduler(bot) сначала")
 
 
 # Вспомогательные функции для тестирования
@@ -150,6 +181,7 @@ async def manual_expire_check(bot: Bot):
 
 async def get_scheduler_info() -> dict:
     """Получение информации о планировщике"""
+    global scheduler_service
     if scheduler_service:
         return await scheduler_service.get_scheduler_status()
     else:
