@@ -304,81 +304,30 @@ async def expired_code_callback(callback: CallbackQuery):
         show_alert=True
     )
 
+
+user_checked_codes = {}
+
 @router.callback_query(lambda c: c.data and c.data.startswith("check_code_"))
-async def check_code_validity(callback: CallbackQuery):
-    """
-    🎯 КЛЮЧЕВАЯ ФУНКЦИЯ: Проверка актуальности кода перед переходом на сайт
-    Вызывается при клике на код в списке всех кодов
-    """
-    try:
-        # Извлекаем код из callback_data
-        code_value = callback.data.replace("check_code_", "")
-        logger.info(f"🔍 Проверяю актуальность кода: {code_value}")
-        
-        # Проверяем актуальность кода в БД
-        active_codes = await db.get_active_codes()
-        code_exists = False
-        code_obj = None
-        
-        for code in active_codes:
-            if code.code == code_value:
-                code_exists = True
-                code_obj = code
-                break
-        
-        if not code_exists:
-            # Код не найден или неактивен
-            logger.info(f"❌ Код {code_value} не найден или неактивен")
-            
-            await callback.answer(
-                f"❌ Промо-код {code_value} больше недействителен или истек!",
-                show_alert=True
-            )
-            return
-        
-        # Дополнительная проверка на истечение по времени (если есть expires_date)
-        if code_obj and code_obj.expires_date:
-            moscow_now = get_moscow_time()
-            if moscow_now >= code_obj.expires_date:
-                logger.info(f"⏰ Код {code_value} истек по времени")
-                
-                await callback.answer(
-                    f"⏰ Промо-код {code_value} истек {code_obj.expires_date.strftime('%d.%m.%Y %H:%M')}!",
-                    show_alert=True
-                )
-                return
-        
-        # Код актуален! Показываем подтверждение перехода
-        logger.info(f"✅ Код {code_value} актуален, показываю подтверждение")
-        
-        confirmation_text = f"""✅ <b>Промокод всё ещё актуален!</b>
+async def check_code_and_update_button(callback: CallbackQuery):
+    code_value = callback.data.replace("check_code_", "")
+    user_id = callback.from_user.id
+    
+    # Проверяем код в БД
+    active_codes = await db.get_active_codes()
+    code_obj = next((c for c in active_codes if c.code == code_value), None)
+    
+    if not code_obj or (code_obj.expires_date and get_moscow_time() >= code_obj.expires_date):
+        # Код истек
+        user_checked_codes.setdefault(user_id, {})[code_value] = 'expired'
+        await callback.answer(f"❌ Промо-код {code_value} больше недействителен!", show_alert=True)
+    else:
+        # Код актуален
+        user_checked_codes.setdefault(user_id, {})[code_value] = 'valid'
+        await callback.answer(f"✅ Код {code_value} проверен и актуален!")
+    
+    # Обновляем кнопку
+    await update_codes_keyboard_for_user(callback, user_id)
 
-<code>{code_value}</code>
-
-<i>{code_obj.description or 'Промо-код Genshin Impact'}</i>
-
-<i>{code_obj.rewards or 'Не указано'}</i>
-
-"""
-
-        if code_obj.expires_date:
-            from utils.date_utils import format_expiry_date
-            confirmation_text += f"\n⏰ <b>Действует до:</b> {format_expiry_date(code_obj.expires_date)}"
-        
-        
-        await callback.message.edit_text(
-            confirmation_text,
-            parse_mode="HTML",
-            reply_markup=get_code_confirmation_keyboard(code_value)
-        )
-        
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при проверке кода: {e}")
-        await callback.answer(
-            "❌ Произошла ошибка при проверке кода. Попробуй еще раз.",
-            show_alert=True
-        )
 
 
 # Обработчик кнопки "Назад к кодам" из подтверждения
