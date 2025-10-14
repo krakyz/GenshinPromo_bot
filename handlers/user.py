@@ -90,19 +90,16 @@ class MessageTemplates:
 
 🔔 Не забудь подписаться на обновления."""
         
-        text = f"🎁 <b>Активные промо-коды ({len(codes)}):</b>\n\n"
+        text = f"<b>Активные промо-коды ({len(codes)}):</b>\n\n"
         
         for code in codes:
-            text += f"🔥 <code>{code.code}</code>\n"
+            text += f"<code>{code.code}</code>\n"
             text += f"<i>{code.description or 'MISSING_CODE'}</i>\n"
-            text += f"💎 {code.rewards or 'Не указано'}\n\n"
+            text += f"<i>{code.rewards or 'Не указано'}</i>\n\n"
             
             if code.expires_date:
                 text += f"⏰ До: {format_expiry_date(code.expires_date)}\n"
             
-            text += "═════════════════▲═════════════════\n\n"
-        
-        text += "<i>💡 Нажми на название кода для быстрой активации!</i>"
         return text
     
     @staticmethod
