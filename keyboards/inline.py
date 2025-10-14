@@ -1,172 +1,261 @@
 """
-Клавиатуры с системой тройного клика для валидации действий
+Улучшенные клавиатуры с динамической проверкой актуальности кодов
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from typing import List, Tuple, Optional
+from typing import List
 from models import CodeModel
 
 
-class KeyboardBuilder:
-    """Универсальный строитель клавиатур"""
-    
-    @staticmethod
-    def create_keyboard(
-        buttons: List[List[Tuple[str, str]]],
-        back_button: bool = False,
-        refresh_button: Optional[str] = None
-    ) -> InlineKeyboardMarkup:
-        """
-        Создает клавиатуру из списка кнопок
-        
-        Args:
-            buttons: List[List[Tuple[text, callback_data]]]
-            back_button: добавить кнопку "Назад"
-            refresh_button: callback_data для кнопки обновления
-        """
-        keyboard = []
-        
-        for row in buttons:
-            keyboard_row = []
-            for text, callback_data in row:
-                keyboard_row.append(InlineKeyboardButton(text=text, callback_data=callback_data))
-            keyboard.append(keyboard_row)
-        
-        # Добавляем кнопку обновления если указана
-        if refresh_button:
-            keyboard.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=refresh_button)])
-        
-        # Добавляем кнопку "Назад" если нужна
-        if back_button:
-            keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-        
-        return InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    @staticmethod
-    def create_url_keyboard(
-        buttons: List[Tuple[str, str]],
-        additional_buttons: Optional[List[List[Tuple[str, str]]]] = None
-    ) -> InlineKeyboardMarkup:
-        """Создает клавиатуру с URL кнопками"""
-        keyboard = []
-        
-        for text, url in buttons:
-            keyboard.append([InlineKeyboardButton(text=text, url=url)])
-        
-        if additional_buttons:
-            for row in additional_buttons:
-                keyboard_row = []
-                for text, callback_data in row:
-                    keyboard_row.append(InlineKeyboardButton(text=text, callback_data=callback_data))
-                keyboard.append(keyboard_row)
-        
-        return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-# Фабрики специализированных клавиатур
 def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineKeyboardMarkup:
-    """Клавиатура для активации промо-кода или отображения истекшего"""
-    if is_expired:
-        return KeyboardBuilder.create_keyboard(
-            buttons=[[(f"❌ Код истек: {code}", "expired_code")]],
-            additional_buttons=[[("📋 Все коды", "view_all_codes")]]
-        )
+    """Создает клавиатуру с кнопкой активации кода и кнопкой просмотра всех кодов"""
+    inline_keyboard = []
     
-    activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
-    return KeyboardBuilder.create_url_keyboard(
-        buttons=[(f"🎁 Активировать: {code}", activation_url)],
-        additional_buttons=[[("📋 Все коды", "view_all_codes")]]
-    )
+    if not is_expired:
+        # Активная кнопка для активации
+        activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
+        inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎁 Активировать код: {code}",
+                url=activation_url
+            )
+        ])
+    else:
+        # Неактивная кнопка для истекшего кода
+        inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"❌ Код истек: {code}",
+                callback_data="expired_code"
+            )
+        ])
+    
+    # Кнопка просмотра всех кодов
+    inline_keyboard.append([
+        InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 
 def get_all_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
-    """Клавиатура со всеми активными кодами"""
-    url_buttons = []
+    """
+    Создает клавиатуру со всеми кодами с ДИНАМИЧЕСКОЙ ПРОВЕРКОЙ актуальности
+    Вместо прямых URL-кнопок используем callback-кнопки с проверкой БД
+    """
+    inline_keyboard = []
+    
+    # Добавляем кнопки для каждого кода с callback для проверки актуальности
     for code in codes:
         if code.is_active:
-            activation_url = f"https://genshin.hoyoverse.com/gift?code={code.code}"
-            url_buttons.append((f"🎁 {code.code}", activation_url))
+            inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🎁 {code.code}",
+                    callback_data=f"check_code_{code.code}"  # ⭐ НОВАЯ ЛОГИКА
+                )
+            ])
     
-    return KeyboardBuilder.create_url_keyboard(buttons=url_buttons)
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 
 def get_subscription_keyboard(is_subscribed: bool = False) -> InlineKeyboardMarkup:
-    """Динамическая клавиатура подписки"""
-    buttons = []
+    """Создает клавиатуру для управления подпиской (динамическую)"""
+    inline_keyboard = []
     
+    # Показываем кнопку подписки только если пользователь не подписан
     if not is_subscribed:
-        buttons.append([("🔔 Подписаться", "subscribe")])
+        inline_keyboard.append([
+            InlineKeyboardButton(text="🔔 Подписаться", callback_data="subscribe")
+        ])
     
-    buttons.append([("📋 Все коды", "view_all_codes")])
+    # Кнопка просмотра кодов всегда доступна
+    inline_keyboard.append([
+        InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
+    ])
     
-    return KeyboardBuilder.create_keyboard(buttons=buttons)
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 
-# Админские клавиатуры
-def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Главное меню админ-панели"""
-    return KeyboardBuilder.create_keyboard(buttons=[
-        [("➕ Добавить код", "admin_add_code"), ("❌ Деактивировать код", "admin_expire_code")],
-        [("📊 Статистика", "admin_stats"), ("📋 Активные коды", "admin_active_codes")],
-        [("👥 Пользователи", "admin_users"), ("📢 Реклама", "admin_custom_post")],
-        [("🗄️ База данных", "admin_database")]
+# НОВАЯ функция для создания кнопки-подтверждения активации
+def get_code_confirmation_keyboard(code: str) -> InlineKeyboardMarkup:
+    """
+    Создает клавиатуру с подтверждением перехода на сайт активации
+    Показывается после проверки актуальности кода
+    """
+    activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"🌐 Перейти на сайт HoYoverse",
+            url=activation_url
+        )],
+        [InlineKeyboardButton(
+            text="📋 Назад к кодам", 
+            callback_data="view_all_codes"
+        )]
     ])
 
 
+# Остальные функции остаются без изменений
+def get_admin_keyboard() -> InlineKeyboardMarkup:
+    """Создает главную клавиатуру для админа"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ Добавить код", callback_data="admin_add_code"),
+            InlineKeyboardButton(text="❌ Деактивировать код", callback_data="admin_expire_code")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
+            InlineKeyboardButton(text="📋 Активные коды", callback_data="admin_active_codes")
+        ],
+        [
+            InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
+            InlineKeyboardButton(text="📢 Реклама", callback_data="admin_custom_post")
+        ],
+        [
+            InlineKeyboardButton(text="🗄️ База данных", callback_data="admin_database")
+        ]
+    ])
+    return keyboard
+
+
+def get_admin_add_code_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы добавления кода"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
+
+
+def get_admin_expire_code_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы деактивации кода"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
+
+
+def get_admin_custom_post_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для страницы создания рекламного поста"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
+
+
 def get_admin_stats_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура страницы статистики (БЕЗ списка кодов)"""
-    return KeyboardBuilder.create_keyboard(
-        buttons=[],
-        back_button=True,
-        refresh_button="admin_stats"
-    )
+    """Создает клавиатуру для страницы статистики"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_stats")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
 
 
 def get_admin_codes_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура страницы активных кодов"""
-    return KeyboardBuilder.create_keyboard(
-        buttons=[],
-        back_button=True,
-        refresh_button="admin_active_codes"
-    )
+    """Создает клавиатуру для страницы активных кодов"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_active_codes")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
 
 
 def get_admin_users_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура страницы пользователей"""
-    return KeyboardBuilder.create_keyboard(
-        buttons=[],
-        back_button=True,
-        refresh_button="admin_users"
-    )
+    """Создает клавиатуру для страницы пользователей"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_users")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
+
+
+def get_codes_navigation_keyboard() -> InlineKeyboardMarkup:
+    """Создает минимальную клавиатуру для навигации (только просмотр кодов)"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
+        ]
+    ])
+    return keyboard
 
 
 def get_database_admin_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура управления базой данных"""
-    return KeyboardBuilder.create_keyboard(
-        buttons=[
-            [("📥 Скачать БД", "admin_download_db"), ("🗑️ Сбросить БД", "admin_reset_db")]
+    """Создает клавиатуру для управления базой данных"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📥 Скачать БД", callback_data="admin_download_db"),
+            InlineKeyboardButton(text="🗑️ Сбросить БД", callback_data="admin_reset_db")
         ],
-        back_button=True
-    )
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        ]
+    ])
+    return keyboard
 
 
-def get_admin_back_keyboard() -> InlineKeyboardMarkup:
-    """Простая клавиатура только с кнопкой "Назад" """
-    return KeyboardBuilder.create_keyboard(buttons=[], back_button=True)
+def get_custom_post_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для кастомного поста (только просмотр кодов)"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
+        ]
+    ])
+    return keyboard
 
 
-# Новые клавиатуры для деактивации кодов с кнопками
+def get_custom_post_with_button_keyboard(button_text: str, button_url: str) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для кастомного поста с дополнительной кнопкой"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=button_text, url=button_url)
+        ],
+        [
+            InlineKeyboardButton(text="📋 Все коды", callback_data="view_all_codes")
+        ]
+    ])
+    return keyboard
+
+
+# НОВЫЕ функции для административных клавиатур с тройным кликом
+
 def get_admin_expire_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
-    """Клавиатура с кнопками кодов для деактивации"""
-    buttons = []
+    """Клавиатура с кнопками кодов для деактивации (для админов)"""
+    inline_keyboard = []
     
     for code in codes:
-        buttons.append([(f"🔥 {code.code}", f"expire_code_{code.code}_1")])
+        inline_keyboard.append([
+            InlineKeyboardButton(
+                text=f"🔥 {code.code}",
+                callback_data=f"expire_code_{code.code}_1"
+            )
+        ])
     
-    return KeyboardBuilder.create_keyboard(buttons=buttons, back_button=True)
+    inline_keyboard.append([
+        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 
 def get_expire_code_click_keyboard(code: str, click_count: int) -> InlineKeyboardMarkup:
-    """Клавиатура с прогрессом кликов для подтверждения деактивации"""
+    """Клавиатура с прогрессом кликов для подтверждения деактивации (для админов)"""
     
     if click_count == 1:
         button_text = f"🔸 {code} (нажми еще 2 раза)"
@@ -187,15 +276,14 @@ def get_expire_code_click_keyboard(code: str, click_count: int) -> InlineKeyboar
     ])
 
 
-# Новые клавиатуры для сброса БД с кликером
 def get_reset_db_click_keyboard(click_count: int) -> InlineKeyboardMarkup:
-    """Клавиатура с прогрессом кликов для подтверждения сброса БД"""
+    """Клавиатура с прогрессом кликов для подтверждения сброса БД (для админов)"""
     
     if click_count == 1:
-        button_text = "🔸 Сброс БД (нажми еще 2 раза)"
+        button_text = "🔸 Сброс БД (2)"
         callback_data = "reset_click_2"
     elif click_count == 2:
-        button_text = "🔸🔸 Сброс БД (нажми еще 1 раз)"
+        button_text = "🔸 Сброс БД (1)"
         callback_data = "reset_click_3"
     elif click_count >= 3:
         button_text = "🗑️ СБРОСИТЬ БАЗУ ДАННЫХ"
@@ -210,22 +298,8 @@ def get_reset_db_click_keyboard(click_count: int) -> InlineKeyboardMarkup:
     ])
 
 
-# Алиасы для обратной совместимости
-get_admin_add_code_keyboard = get_admin_back_keyboard
-get_admin_expire_code_keyboard = get_admin_back_keyboard
-get_admin_custom_post_keyboard = get_admin_back_keyboard
-
-
-def get_custom_post_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура для кастомного поста (только просмотр кодов)"""
-    return KeyboardBuilder.create_keyboard(
-        buttons=[[("📋 Все коды", "view_all_codes")]]
-    )
-
-
-def get_custom_post_with_button_keyboard(button_text: str, button_url: str) -> InlineKeyboardMarkup:
-    """Клавиатура для кастомного поста с дополнительной кнопкой"""
-    return KeyboardBuilder.create_url_keyboard(
-        buttons=[(button_text, button_url)],
-        additional_buttons=[[("📋 Все коды", "view_all_codes")]]
-    )
+def get_admin_back_keyboard() -> InlineKeyboardMarkup:
+    """Простая клавиатура только с кнопкой "Назад" для админов"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+    ])
