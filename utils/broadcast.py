@@ -102,6 +102,7 @@ class MessageTemplates:
 <code>{code.code}</code>
 
 <i>{code.description or 'Промо-код Genshin Impact'}</i>
+
 <i>{code.rewards or 'Не указано'}</i>"""
 
         
