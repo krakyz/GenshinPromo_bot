@@ -366,7 +366,7 @@ async def check_code_and_update_button(callback: CallbackQuery):
                         activation_url = f"https://genshin.hoyoverse.com/gift?code={code_val}"
                         inline_keyboard.append([
                             InlineKeyboardButton(
-                                text=f"✅ {code_val} (проверен)",
+                                text=f"✅ {code_val} проверен — нажми для активации",
                                 url=activation_url
                             )
                         ])
@@ -374,7 +374,7 @@ async def check_code_and_update_button(callback: CallbackQuery):
                         # Код истек
                         inline_keyboard.append([
                             InlineKeyboardButton(
-                                text=f"❌ {code_val} (истек)",
+                                text=f"❌ {code_val} истек",
                                 callback_data="expired_code"
                             )
                         ])
