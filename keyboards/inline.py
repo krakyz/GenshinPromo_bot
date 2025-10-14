@@ -37,23 +37,19 @@ def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineK
 
 
 def get_all_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
-    """
-    Создает клавиатуру со всеми кодами с ДИНАМИЧЕСКОЙ ПРОВЕРКОЙ актуальности
-    Вместо прямых URL-кнопок используем callback-кнопки с проверкой БД
-    """
     inline_keyboard = []
     
-    # Добавляем кнопки для каждого кода с callback для проверки актуальности
     for code in codes:
         if code.is_active:
             inline_keyboard.append([
                 InlineKeyboardButton(
                     text=f"🎁 {code.code}",
-                    callback_data=f"check_code_{code.code}"  # ⭐ НОВАЯ ЛОГИКА
+                    callback_data=f"check_code_{code.code}"  # ⭐ Callback вместо URL
                 )
             ])
     
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+
 
 
 def get_subscription_keyboard(is_subscribed: bool = False) -> InlineKeyboardMarkup:
