@@ -94,6 +94,8 @@ class MessageTemplates:
             text += f"<i>{code.rewards or 'Не указано'}</i>\n"
             if code.expires_date:
                 text += f"⏰ Активен до {format_expiry_date(code.expires_date)}\n\n"
+            else:
+                text += f"\n"
             
         return text
     
