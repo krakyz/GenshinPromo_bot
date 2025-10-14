@@ -99,11 +99,12 @@ class MessageTemplates:
         """Формирует сообщение о новом промо-коде"""
         text = f"""🎉 <b>Новый промокод!</b> 🎉
 
-🔥 <b>Код:</b> <code>{code.code}</code>
+Код: <code>{code.code}</code>
 
-💎 Награды: {code.rewards or 'Не указано'}
+{code.description or 'Промо-код Genshin Impact'}
 
-        {code.description or 'Промо-код Genshin Impact'}"""
+💎 Награды: {code.rewards or 'Не указано'}"""
+
         
         if code.expires_date:
             text += f"\n\n⏰ <b>Действует до:</b> {format_expiry_date(code.expires_date)}"
