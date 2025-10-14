@@ -351,17 +351,18 @@ async def check_code_validity(callback: CallbackQuery):
         # Код актуален! Показываем подтверждение перехода
         logger.info(f"✅ Код {code_value} актуален, показываю подтверждение")
         
-        confirmation_text = f"""✅ <b>Промо-код актуален!</b>
+        confirmation_text = f"""✅ <b>Промокод всё ещё актуален!</b>
 
-🎁 <b>Код:</b> <code>{code_value}</code>
-💎 <b>Награды:</b> {code_obj.rewards or 'Не указано'}
-📝 <b>Описание:</b> {code_obj.description or 'Промо-код Genshin Impact'}"""
+<code>{code_value}</code>
+
+<i>{code_obj.rewards or 'Не указано'}</i>
+
+<i>{code_obj.description or 'Промо-код Genshin Impact'}</i>"""
 
         if code_obj.expires_date:
             from utils.date_utils import format_expiry_date
             confirmation_text += f"\n⏰ <b>Действует до:</b> {format_expiry_date(code_obj.expires_date)}"
         
-        confirmation_text += "\n\n🌐 <i>Нажми кнопку ниже, чтобы перейти на сайт активации HoYoverse</i>"
         
         await callback.message.edit_text(
             confirmation_text,
@@ -369,7 +370,6 @@ async def check_code_validity(callback: CallbackQuery):
             reply_markup=get_code_confirmation_keyboard(code_value)
         )
         
-        await callback.answer("✅ Код проверен!")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при проверке кода: {e}")

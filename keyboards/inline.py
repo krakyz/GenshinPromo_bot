@@ -15,7 +15,7 @@ def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineK
         activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
         inline_keyboard.append([
             InlineKeyboardButton(
-                text=f"🎁 Активировать код: {code}",
+                text=f"🎁 Активировать: {code}",
                 url=activation_url
             )
         ])
@@ -84,11 +84,11 @@ def get_code_confirmation_keyboard(code: str) -> InlineKeyboardMarkup:
     
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"🌐 Перейти на сайт HoYoverse",
+            text=f"🌐 Активировать промокод",
             url=activation_url
         )],
         [InlineKeyboardButton(
-            text="📋 Назад к кодам", 
+            text="🔙 Назад", 
             callback_data="view_all_codes"
         )]
     ])
