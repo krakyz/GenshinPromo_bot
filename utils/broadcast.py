@@ -107,7 +107,7 @@ class MessageTemplates:
 
         
         if code.expires_date:
-            text += f"\n\n⏰ <b>Действует до:</b> {format_expiry_date(code.expires_date)}"
+            text += f"\n\n⏰ <b>Действует до</b> {format_expiry_date(code.expires_date)}"
         
         return text
     
