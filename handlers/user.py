@@ -390,10 +390,6 @@ async def check_code_and_update_button(callback: CallbackQuery):
             from aiogram.types import InlineKeyboardMarkup
             new_keyboard = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
             await callback.message.edit_reply_markup(reply_markup=new_keyboard)
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        await callback.answer("❌ Ошибка проверки", show_alert=True)
 
 
 
