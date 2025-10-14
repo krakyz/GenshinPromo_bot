@@ -1,6 +1,3 @@
-"""
-Оптимизированный модуль пользовательских обработчиков
-"""
 import logging
 from typing import Dict, Any
 
@@ -14,9 +11,10 @@ from models import UserModel
 from keyboards.inline import (
     get_subscription_keyboard,
     get_all_codes_keyboard,
-    get_code_activation_keyboard
+    get_code_activation_keyboard,
+    get_code_confirmation_keyboard
 )
-from utils.date_utils import format_expiry_date
+from utils.date_utils import get_moscow_time, format_expiry_date
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -305,3 +303,157 @@ async def expired_code_callback(callback: CallbackQuery):
         "⌛ Этот промо-код больше не действует. Следите за новыми кодами!",
         show_alert=True
     )
+
+@router.callback_query(lambda c: c.data and c.data.startswith("check_code_"))
+async def check_code_validity(callback: CallbackQuery):
+    """
+    🎯 КЛЮЧЕВАЯ ФУНКЦИЯ: Проверка актуальности кода перед переходом на сайт
+    Вызывается при клике на код в списке всех кодов
+    """
+    try:
+        # Извлекаем код из callback_data
+        code_value = callback.data.replace("check_code_", "")
+        logger.info(f"🔍 Проверяю актуальность кода: {code_value}")
+        
+        # Проверяем актуальность кода в БД
+        active_codes = await db.get_active_codes()
+        code_exists = False
+        code_obj = None
+        
+        for code in active_codes:
+            if code.code == code_value:
+                code_exists = True
+                code_obj = code
+                break
+        
+        if not code_exists:
+            # Код не найден или неактивен
+            logger.info(f"❌ Код {code_value} не найден или неактивен")
+            
+            await callback.answer(
+                f"❌ Промо-код {code_value} больше недействителен или истек!",
+                show_alert=True
+            )
+            return
+        
+        # Дополнительная проверка на истечение по времени (если есть expires_date)
+        if code_obj and code_obj.expires_date:
+            moscow_now = get_moscow_time()
+            if moscow_now >= code_obj.expires_date:
+                logger.info(f"⏰ Код {code_value} истек по времени")
+                
+                await callback.answer(
+                    f"⏰ Промо-код {code_value} истек {code_obj.expires_date.strftime('%d.%m.%Y %H:%M')}!",
+                    show_alert=True
+                )
+                return
+        
+        # Код актуален! Показываем подтверждение перехода
+        logger.info(f"✅ Код {code_value} актуален, показываю подтверждение")
+        
+        confirmation_text = f"""✅ <b>Промо-код актуален!</b>
+
+🎁 <b>Код:</b> <code>{code_value}</code>
+💎 <b>Награды:</b> {code_obj.rewards or 'Не указано'}
+📝 <b>Описание:</b> {code_obj.description or 'Промо-код Genshin Impact'}"""
+
+        if code_obj.expires_date:
+            from utils.date_utils import format_expiry_date
+            confirmation_text += f"\n⏰ <b>Действует до:</b> {format_expiry_date(code_obj.expires_date)}"
+        
+        confirmation_text += "\n\n🌐 <i>Нажми кнопку ниже, чтобы перейти на сайт активации HoYoverse</i>"
+        
+        await callback.message.edit_text(
+            confirmation_text,
+            parse_mode="HTML",
+            reply_markup=get_code_confirmation_keyboard(code_value)
+        )
+        
+        await callback.answer("✅ Код проверен!")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке кода: {e}")
+        await callback.answer(
+            "❌ Произошла ошибка при проверке кода. Попробуй еще раз.",
+            show_alert=True
+        )
+
+
+# Обработчик кнопки "Назад к кодам" из подтверждения
+@router.callback_query(F.data == "back_to_codes")  
+async def back_to_codes_callback(callback: CallbackQuery):
+    """Возврат к списку кодов из подтверждения"""
+    try:
+        # Получаем актуальные коды
+        codes = await db.get_active_codes()
+        
+        if not codes:
+            codes_text = """🤷‍♂️ <b>Активных промо-кодов нет</b>
+
+Подпишись на уведомления, чтобы не пропустить новые коды!"""
+            
+            from keyboards.inline import get_subscription_keyboard
+            is_subscribed = len(await db.get_all_subscribers()) > 0  # Упрощенная проверка
+            keyboard = get_subscription_keyboard(is_subscribed)
+        else:
+            codes_text = f"""📋 <b>Все активные промо-коды ({len(codes)}):</b>
+
+💡 <i>Нажми на код, чтобы проверить его актуальность перед активацией</i>"""
+            
+            from keyboards.inline import get_all_codes_keyboard
+            keyboard = get_all_codes_keyboard(codes)
+        
+        await callback.message.edit_text(
+            codes_text,
+            parse_mode="HTML", 
+            reply_markup=keyboard
+        )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при возврате к кодам: {e}")
+        await callback.answer("❌ Ошибка загрузки кодов", show_alert=True)
+
+
+# Дополнительная функция для получения информации о коде по значению
+async def get_code_by_value(code_value: str):
+    """Вспомогательная функция для получения кода по значению"""
+    try:
+        active_codes = await db.get_active_codes()
+        for code in active_codes:
+            if code.code == code_value:
+                return code
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка получения кода {code_value}: {e}")
+        return None
+
+
+# Функция для проверки множественных кодов (если понадобится в будущем)
+async def check_multiple_codes_validity():
+    """Массовая проверка актуальности всех кодов"""
+    try:
+        codes = await db.get_active_codes()
+        moscow_now = get_moscow_time()
+        
+        valid_codes = []
+        expired_codes = []
+        
+        for code in codes:
+            if code.expires_date and moscow_now >= code.expires_date:
+                expired_codes.append(code)
+            else:
+                valid_codes.append(code)
+        
+        logger.info(f"📊 Проверка кодов: {len(valid_codes)} актуальных, {len(expired_codes)} истекших")
+        
+        return {
+            'valid': valid_codes,
+            'expired': expired_codes,
+            'total': len(codes)
+        }
+        
+    except Exception as e:
+        logger.error(f"Ошибка массовой проверки кодов: {e}")
+        return {'valid': [], 'expired': [], 'total': 0}
