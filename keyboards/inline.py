@@ -311,17 +311,14 @@ async def view_all_codes_callback(callback: CallbackQuery):
         
         if not codes:
             codes_text = """🤷‍♂️ Активных промо-кодов нет
-
 Подпишись на уведомления, чтобы не пропустить новые коды!"""
-            
             is_subscribed = await UserService.get_user_subscription_status(user_id)
             keyboard = get_subscription_keyboard(is_subscribed)
         else:
             codes_text = f"""📋 Все активные промо-коды ({len(codes)}):
-
 💡 Нажми на код, чтобы проверить его актуальность перед активацией"""
             
-            # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Используем проверенные состояния
+            # 🎯 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Используем проверенные состояния
             checked_codes = user_checked_codes.get(user_id, {})
             inline_keyboard = []
             
@@ -331,7 +328,7 @@ async def view_all_codes_callback(callback: CallbackQuery):
                     status = checked_codes.get(code_val, 'unchecked')
                     
                     if status == 'valid':
-                        # Код проверен и актуален - URL-кнопка
+                        # ✅ Проверен - URL-кнопка
                         activation_url = f"https://genshin.hoyoverse.com/gift?code={code_val}"
                         inline_keyboard.append([
                             InlineKeyboardButton(
@@ -340,7 +337,7 @@ async def view_all_codes_callback(callback: CallbackQuery):
                             )
                         ])
                     elif status == 'expired':
-                        # Код истек - неактивная кнопка
+                        # ❌ Истек - неактивная кнопка
                         inline_keyboard.append([
                             InlineKeyboardButton(
                                 text=f"❌ {code_val} (истек)",
@@ -348,7 +345,7 @@ async def view_all_codes_callback(callback: CallbackQuery):
                             )
                         ])
                     else:
-                        # Код не проверен - кнопка для проверки
+                        # 🎁 Не проверен
                         inline_keyboard.append([
                             InlineKeyboardButton(
                                 text=f"🎁 {code_val}",
@@ -371,32 +368,18 @@ async def view_all_codes_callback(callback: CallbackQuery):
     
     await callback.answer()
 
-
-# ============================================================================
-# ТАКЖЕ ДОБАВЬ ОБРАБОТЧИКИ ПОДПИСКИ (если их нет)
-# ============================================================================
-
 @router.callback_query(F.data == "subscribe")
 async def subscribe_callback(callback: CallbackQuery):
     """Обработчик кнопки подписки"""
-    try:
-        success = await db.subscribe_user(callback.from_user.id)
-        
-        if success:
-            await callback.answer("✅ Подписка активирована!", show_alert=True)
-            
-            # Обновляем клавиатуру
-            keyboard = get_subscription_keyboard(True)  # True = подписан
-            await callback.message.edit_reply_markup(reply_markup=keyboard)
-        else:
-            await callback.answer("❌ Ошибка подписки", show_alert=True)
-            
-    except Exception as e:
-        logger.error(f"Ошибка подписки: {e}")
+    success = await db.subscribe_user(callback.from_user.id)
+    if success:
+        await callback.answer("✅ Подписка активирована!", show_alert=True)
+        keyboard = get_subscription_keyboard(True)
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    else:
         await callback.answer("❌ Ошибка подписки", show_alert=True)
-
 
 @router.callback_query(F.data == "expired_code")
 async def expired_code_callback(callback: CallbackQuery):
-    """Обработчик клика по истекшему коду"""
-    await callback.answer("❌ Этот промо-код больше не действует. Следи за новыми кодами!", show_alert=True)
+    """Обработчик истекшего кода"""
+    await callback.answer("❌ Этот промо-код больше не действует!", show_alert=True)
