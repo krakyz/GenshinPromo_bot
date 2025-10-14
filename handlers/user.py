@@ -93,8 +93,8 @@ class MessageTemplates:
         text = f"🎁 <b>Активные промо-коды ({len(codes)}):</b>\n\n"
         
         for code in codes:
-            text += f"🔥 <b>{code.code}</b>\n"
-            text += f"📝 {code.description or 'Промо-код Genshin Impact'}\n"
+            text += f"🔥 <b>{code.code}</b>\n\n"
+            text += f"<i>{code.description or 'MISSING_CODE'}</i>\n\n"
             text += f"💎 {code.rewards or 'Не указано'}\n"
             
             if code.expires_date:
