@@ -36,7 +36,8 @@ def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 
-def get_all_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
+def get_all_codes_keyboard(codes):
+    """Клавиатуры с кодами для проверки"""
     inline_keyboard = []
     
     for code in codes:
@@ -44,11 +45,12 @@ def get_all_codes_keyboard(codes: List[CodeModel]) -> InlineKeyboardMarkup:
             inline_keyboard.append([
                 InlineKeyboardButton(
                     text=f"🎁 {code.code}",
-                    callback_data=f"check_code_{code.code}"  # ⭐ Callback вместо URL
+                    callback_data=f"check_code_{code.code}"
                 )
             ])
     
     return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+
 
 
 

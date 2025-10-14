@@ -307,26 +307,94 @@ async def expired_code_callback(callback: CallbackQuery):
 
 user_checked_codes = {}
 
+# Словарь для хранения проверенных кодов
+user_checked_codes = {}
+
 @router.callback_query(lambda c: c.data and c.data.startswith("check_code_"))
 async def check_code_and_update_button(callback: CallbackQuery):
-    code_value = callback.data.replace("check_code_", "")
-    user_id = callback.from_user.id
-    
-    # Проверяем код в БД
-    active_codes = await db.get_active_codes()
-    code_obj = next((c for c in active_codes if c.code == code_value), None)
-    
-    if not code_obj or (code_obj.expires_date and get_moscow_time() >= code_obj.expires_date):
-        # Код истек
-        user_checked_codes.setdefault(user_id, {})[code_value] = 'expired'
-        await callback.answer(f"❌ Промо-код {code_value} больше недействителен!", show_alert=True)
-    else:
-        # Код актуален
-        user_checked_codes.setdefault(user_id, {})[code_value] = 'valid'
-        await callback.answer(f"✅ Код {code_value} проверен и актуален!")
-    
-    # Обновляем кнопку
-    await update_codes_keyboard_for_user(callback, user_id)
+    """Проверяем код и обновляем кнопку"""
+    try:
+        code_value = callback.data.replace("check_code_", "")
+        user_id = callback.from_user.id
+        
+        print(f"🔍 Проверяю код: {code_value}")
+        
+        # Проверяем код в БД
+        active_codes = await db.get_active_codes()
+        code_obj = None
+        
+        for code in active_codes:
+            if code.code == code_value:
+                code_obj = code
+                break
+        
+        # Инициализируем словарь пользователя
+        if user_id not in user_checked_codes:
+            user_checked_codes[user_id] = {}
+        
+        # Проверяем статус кода
+        if not code_obj:
+            user_checked_codes[user_id][code_value] = 'expired'
+            await callback.answer(f"❌ Код {code_value} недействителен!", show_alert=True)
+        else:
+            if code_obj.expires_date:
+                from utils.date_utils import get_moscow_time
+                moscow_now = get_moscow_time()
+                if moscow_now >= code_obj.expires_date:
+                    user_checked_codes[user_id][code_value] = 'expired'
+                    await callback.answer(f"⏰ Код {code_value} истек!", show_alert=True)
+                else:
+                    user_checked_codes[user_id][code_value] = 'valid'
+                    await callback.answer(f"✅ Код {code_value} проверен!")
+            else:
+                user_checked_codes[user_id][code_value] = 'valid'  
+                await callback.answer(f"✅ Код {code_value} проверен!")
+        
+        # ОБНОВЛЯЕМ КЛАВИАТУРУ
+        codes = await db.get_active_codes()
+        if codes:
+            checked_codes = user_checked_codes.get(user_id, {})
+            inline_keyboard = []
+            
+            for code in codes:
+                if code.is_active:
+                    code_val = code.code
+                    status = checked_codes.get(code_val, 'unchecked')
+                    
+                    if status == 'valid':
+                        # Код проверен и актуален
+                        activation_url = f"https://genshin.hoyoverse.com/gift?code={code_val}"
+                        inline_keyboard.append([
+                            InlineKeyboardButton(
+                                text=f"✅ {code_val} (проверен)",
+                                url=activation_url
+                            )
+                        ])
+                    elif status == 'expired':
+                        # Код истек
+                        inline_keyboard.append([
+                            InlineKeyboardButton(
+                                text=f"❌ {code_val} (истек)",
+                                callback_data="expired_code"
+                            )
+                        ])
+                    else:
+                        # Код не проверен
+                        inline_keyboard.append([
+                            InlineKeyboardButton(
+                                text=f"🎁 {code_val}",
+                                callback_data=f"check_code_{code_val}"
+                            )
+                        ])
+            
+            from aiogram.types import InlineKeyboardMarkup
+            new_keyboard = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+            await callback.message.edit_reply_markup(reply_markup=new_keyboard)
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await callback.answer("❌ Ошибка проверки", show_alert=True)
+
 
 
 
