@@ -73,7 +73,7 @@ def get_code_activation_keyboard(code: str, is_expired: bool = False) -> InlineK
     
     activation_url = f"https://genshin.hoyoverse.com/gift?code={code}"
     return KeyboardBuilder.create_url_keyboard(
-        buttons=[(f"🎁 Активировать код: {code}", activation_url)],
+        buttons=[(f"🎁 Активировать: {code}", activation_url)],
         additional_buttons=[[("📋 Все коды", "view_all_codes")]]
     )
 
