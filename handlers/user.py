@@ -366,7 +366,7 @@ async def check_code_and_update_button(callback: CallbackQuery):
                         activation_url = f"https://genshin.hoyoverse.com/gift?code={code_val}"
                         inline_keyboard.append([
                             InlineKeyboardButton(
-                                text=f"✅ {code_val} проверен — нажми для активации",
+                                text=f"✅ {code_val}: проверен — нажми для активации",
                                 url=activation_url
                             )
                         ])
@@ -479,21 +479,24 @@ async def check_multiple_codes_validity():
     
 @router.callback_query(F.data == "view_all_codes")
 async def view_all_codes_callback(callback: CallbackQuery):
-    """Показ всех кодов с сохранением проверенных состояний"""
+    """Обработчик кнопки просмотра всех кодов - отправляет НОВОЕ сообщение"""
     try:
         user_id = callback.from_user.id
         codes = await db.get_active_codes()
         
         if not codes:
             codes_text = """🤷‍♂️ Активных промо-кодов нет
+
 Подпишись на уведомления, чтобы не пропустить новые коды!"""
+            
             is_subscribed = await UserService.get_user_subscription_status(user_id)
             keyboard = get_subscription_keyboard(is_subscribed)
         else:
             codes_text = f"""📋 Все активные промо-коды ({len(codes)}):
+
 💡 Нажми на код, чтобы проверить его актуальность перед активацией"""
             
-            # 🎯 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Используем проверенные состояния
+            # Используем проверенные состояния (если есть)
             checked_codes = user_checked_codes.get(user_id, {})
             inline_keyboard = []
             
@@ -531,17 +534,20 @@ async def view_all_codes_callback(callback: CallbackQuery):
             from aiogram.types import InlineKeyboardMarkup
             keyboard = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
         
-        await callback.message.edit_text(
+        # 🎯 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Отправляем НОВОЕ сообщение
+        await callback.message.answer(
             codes_text,
             parse_mode="HTML", 
             reply_markup=keyboard
         )
         
+        # Подтверждаем нажатие кнопки
+        await callback.answer("📋 Показываю все коды")
+        
     except Exception as e:
         logger.error(f"Ошибка просмотра кодов: {e}")
         await callback.answer("❌ Ошибка загрузки кодов", show_alert=True)
-    
-    await callback.answer()
+
 
 @router.callback_query(F.data == "subscribe")
 async def subscribe_callback(callback: CallbackQuery):
