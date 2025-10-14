@@ -604,7 +604,7 @@ async def confirm_expire_code(callback: CallbackQuery, bot: Bot):
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         
         # Новый текст для истекшего кода
-        expired_text = f"""❌ <b>Промо-код истек</b>
+        expired_text = f"""❌ <b>Промо-код истек</b> ❌
 
 Код <code>{code}</code> больше недействителен.
 
