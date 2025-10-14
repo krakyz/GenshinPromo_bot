@@ -355,9 +355,11 @@ async def check_code_validity(callback: CallbackQuery):
 
 <code>{code_value}</code>
 
+<i>{code_obj.description or 'Промо-код Genshin Impact'}</i>
+
 <i>{code_obj.rewards or 'Не указано'}</i>
 
-<i>{code_obj.description or 'Промо-код Genshin Impact'}</i>"""
+"""
 
         if code_obj.expires_date:
             from utils.date_utils import format_expiry_date
