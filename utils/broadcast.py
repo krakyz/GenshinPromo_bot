@@ -97,18 +97,17 @@ class MessageTemplates:
     @staticmethod
     def new_code_message(code: CodeModel) -> str:
         """Формирует сообщение о новом промо-коде"""
-        text = f"""🎉 <b>Новый промо-код Genshin Impact!</b>
+        text = f"""🎉 <b>Новый промокод!</b> 🎉
 
 🔥 <b>Код:</b> <code>{code.code}</code>
 
-💎 <b>Награды:</b> {code.rewards or 'Не указано'}
+💎 Награды: {code.rewards or 'Не указано'}
 
-📝 <b>Описание:</b> {code.description or 'Промо-код Genshin Impact'}"""
+        {code.description or 'Промо-код Genshin Impact'}"""
         
         if code.expires_date:
             text += f"\n\n⏰ <b>Действует до:</b> {format_expiry_date(code.expires_date)}"
         
-        text += "\n\n<i>💡 Нажми кнопку ниже для активации!</i>"
         return text
     
     @staticmethod
